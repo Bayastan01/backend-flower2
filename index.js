@@ -22,12 +22,18 @@ app.get('/', (req, res) => {
     message: 'Flower Bot API is running',
     bot: process.env.BOT_USERNAME,
     channel: process.env.CHANNEL_USERNAME,
-    webapp: process.env.WEBAPP_URL
+    webapp: process.env.WEBAPP_URL,
+    status: 'active',
+    timestamp: new Date().toISOString()
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.json({ 
+    status: 'OK', 
+    service: 'flower-bot-api',
+    timestamp: new Date().toISOString() 
+  });
 });
 
 // Маршрут для веб-приложения Telegram
@@ -40,13 +46,42 @@ app.get('/webapp', (req, res) => {
 app.post('/api/auth/google', googleAuth.handleGoogleAuth);
 app.get('/api/auth/user/:userId', googleAuth.getUserInfo);
 
+// Маршрут для импорта контактов
+app.post('/api/upload-contacts', googleAuth.handleContactsUpload);
+
+// Маршрут для проверки статуса пользователя
+app.get('/api/user/:userId/status', googleAuth.getUserStatus);
+
+// Маршрут для публикации объявления
+app.post('/api/publish-ad', googleAuth.handleMediaPublish);
+
 // Маршрут для получения информации о боте
 app.get('/api/bot/info', (req, res) => {
   res.json({
     botUsername: process.env.BOT_USERNAME,
     channelUsername: process.env.CHANNEL_USERNAME,
     frontendUrl: process.env.FRONTEND_URL,
-    backendUrl: process.env.BACKEND_URL
+    backendUrl: process.env.BACKEND_URL,
+    googleClientId: process.env.GOOGLE_CLIENT_ID
+  });
+});
+
+// Обработка 404
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Route not found',
+    path: req.path
+  });
+});
+
+// Обработка ошибок
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: process.env.NODE_ENV === 'production' ? 'Server error' : err.message
   });
 });
 
@@ -63,8 +98,20 @@ process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
 // Запуск сервера
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌐 WebApp URL: ${process.env.WEBAPP_URL}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔐 Google Client ID: ${process.env.GOOGLE_CLIENT_ID}`);
+  console.log(`📱 Telegram Bot: https://t.me/${process.env.BOT_USERNAME.replace('@', '')}`);
+});
+
+// Обработка ошибок сервера
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`Port ${PORT} is already in use`);
+    process.exit(1);
+  } else {
+    console.error('Server error:', error);
+  }
 });
