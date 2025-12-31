@@ -1,19 +1,12 @@
 const { Telegraf, Markup } = require('telegraf');
+const config = require('./config');
 
-require('dotenv').config();
-
-// Проверка токена бота
-if (!process.env.BOT_TOKEN) {
-  console.error('❌ BOT_TOKEN не найден в переменных окружения');
-  console.error('ℹ️ Добавьте BOT_TOKEN в файл .env или переменные окружения Railway');
-  process.exit(1);
-}
-
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Создаем бота с токеном из конфига
+const bot = new Telegraf(config.botToken);
 
 // Обработка ошибок бота
 bot.catch((err, ctx) => {
-  console.error(`Bot error for ${ctx.updateType}:`, err);
+  console.error(`Bot error for ${ctx.updateType}:`, err.message);
 });
 
 // Команда /start - ТОЛЬКО КНОПКА В МАГАЗИН
@@ -24,7 +17,7 @@ bot.start(async (ctx) => {
     const firstName = ctx.from.first_name || '';
     
     // Создаем URL для веб-приложения с параметрами пользователя
-    const webappUrl = `${process.env.WEBAPP_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}?tg_user_id=${userId}&tg_username=${encodeURIComponent(username)}&tg_first_name=${encodeURIComponent(firstName)}`;
+    const webappUrl = `${config.webappUrl}?tg_user_id=${userId}&tg_username=${encodeURIComponent(username)}&tg_first_name=${encodeURIComponent(firstName)}`;
     
     // Только одна кнопка - в магазин
     const keyboard = Markup.inlineKeyboard([
@@ -38,11 +31,11 @@ bot.start(async (ctx) => {
 
     const welcomeMessage = `🌸 <b>Добро пожаловать в магазин цветов!</b>\n\n` +
       `Нажмите кнопку ниже, чтобы открыть магазин и создать объявление.\n\n` +
-      `📢 Наш канал: ${process.env.CHANNEL_USERNAME || '@flowers_market_kg'}`;
+      `📢 Наш канал: ${config.channelUsername}`;
     
     await ctx.replyWithHTML(welcomeMessage, keyboard);
   } catch (error) {
-    console.error('Error in start command:', error);
+    console.error('Error in start command:', error.message);
     await ctx.reply('Произошла ошибка. Пожалуйста, попробуйте позже.');
   }
 });
@@ -56,18 +49,17 @@ bot.help(async (ctx) => {
       `• Создать объявление о продаже цветов\n` +
       `• Посмотреть каталог\n` +
       `• Связаться с администратором\n\n` +
-      `<b>Наш канал:</b> ${process.env.CHANNEL_USERNAME || '@flowers_market_kg'}`
+      `<b>Наш канал:</b> ${config.channelUsername}`
     );
   } catch (error) {
-    console.error('Error in help command:', error);
+    console.error('Error in help command:', error.message);
   }
 });
 
 // Команда /channel - ссылка на канал
 bot.command('channel', async (ctx) => {
   try {
-    const channelUsername = process.env.CHANNEL_USERNAME || 'flowers_market_kg';
-    const cleanUsername = channelUsername.replace('@', '');
+    const cleanUsername = config.channelUsername.replace('@', '');
     
     await ctx.reply(
       '📢 Наш канал с цветами',
@@ -76,7 +68,7 @@ bot.command('channel', async (ctx) => {
       ])
     );
   } catch (error) {
-    console.error('Error in channel command:', error);
+    console.error('Error in channel command:', error.message);
   }
 });
 

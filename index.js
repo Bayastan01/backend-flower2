@@ -4,35 +4,30 @@ const bodyParser = require('body-parser');
 const rateLimiter = require('./middleware/rateLimiter');
 const bot = require('./bot');
 const googleAuth = require('./google-auth');
-
-require('dotenv').config();
-
-// Проверка обязательных переменных окружения
-const requiredEnvVars = ['BOT_TOKEN', 'CHANNEL_ID', 'BOT_USERNAME', 'CHANNEL_USERNAME'];
-const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
-
-if (missingEnvVars.length > 0) {
-  console.error('❌ Отсутствуют обязательные переменные окружения:', missingEnvVars);
-  console.error('ℹ️ Убедитесь, что файл .env существует и содержит все необходимые переменные');
-  process.exit(1);
-}
+const config = require('./config');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = config.port;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json({ limit: process.env.MAX_FILE_SIZE || '50mb' }));
-app.use(bodyParser.urlencoded({ extended: true, limit: process.env.MAX_FILE_SIZE || '50mb' }));
+app.use(bodyParser.json({ limit: config.maxFileSize }));
+app.use(bodyParser.urlencoded({ extended: true, limit: config.maxFileSize }));
 app.use(rateLimiter);
+
+// Логирование запросов
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
+  next();
+});
 
 // Маршруты
 app.get('/', (req, res) => {
   res.json({ 
     message: 'Flower Bot API is running',
-    bot: process.env.BOT_USERNAME,
-    channel: process.env.CHANNEL_USERNAME,
-    webapp: process.env.WEBAPP_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app',
+    bot: config.botUsername,
+    channel: config.channelUsername,
+    webapp: config.webappUrl,
     status: 'active',
     timestamp: new Date().toISOString()
   });
@@ -42,16 +37,14 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     service: 'flower-bot-api',
-    bot: process.env.BOT_USERNAME ? 'configured' : 'missing',
-    channel: process.env.CHANNEL_USERNAME ? 'configured' : 'missing',
+    environment: config.nodeEnv,
     timestamp: new Date().toISOString() 
   });
 });
 
 // Маршрут для веб-приложения Telegram
 app.get('/webapp', (req, res) => {
-  const webappUrl = process.env.WEBAPP_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app/';
-  res.redirect(webappUrl);
+  res.redirect(config.webappUrl);
 });
 
 // Маршруты Google авторизации
@@ -70,11 +63,11 @@ app.post('/api/publish-ad', googleAuth.handleMediaPublish);
 // Маршрут для получения информации о боте
 app.get('/api/bot/info', (req, res) => {
   res.json({
-    botUsername: process.env.BOT_USERNAME,
-    channelUsername: process.env.CHANNEL_USERNAME,
-    frontendUrl: process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app',
-    backendUrl: process.env.BACKEND_URL || `https://${req.get('host')}`,
-    googleClientId: process.env.GOOGLE_CLIENT_ID || 'not-configured'
+    botUsername: config.botUsername,
+    channelUsername: config.channelUsername,
+    frontendUrl: config.frontendUrl,
+    backendUrl: config.backendUrl,
+    googleClientId: config.googleClientId
   });
 });
 
@@ -93,15 +86,15 @@ app.use((err, req, res, next) => {
   res.status(500).json({
     success: false,
     error: 'Internal server error',
-    message: process.env.NODE_ENV === 'production' ? 'Server error' : err.message
+    message: config.nodeEnv === 'production' ? 'Server error' : err.message
   });
 });
 
 // Запуск бота с обработкой ошибок
 try {
   bot.launch().then(() => {
-    console.log(`🤖 Bot @${process.env.BOT_USERNAME || 'unknown'} started successfully`);
-    console.log(`📢 Channel: ${process.env.CHANNEL_USERNAME || 'not-configured'}`);
+    console.log(`🤖 Bot ${config.botUsername} started successfully`);
+    console.log(`📢 Channel: ${config.channelUsername}`);
   }).catch(err => {
     console.error('Failed to start bot:', err);
   });
@@ -129,16 +122,14 @@ process.once('SIGTERM', () => {
 // Запуск сервера
 const server = app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌐 WebApp URL: ${process.env.WEBAPP_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}`);
+  console.log(`🌐 WebApp URL: ${config.webappUrl}`);
   console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔐 Google Client ID: ${process.env.GOOGLE_CLIENT_ID ? 'configured' : 'not-configured'}`);
+  console.log(`🔐 Google Client ID: ${config.googleClientId ? 'configured' : 'not-configured'}`);
   
   // Безопасный вывод Telegram bot URL
-  if (process.env.BOT_USERNAME) {
-    const botUsername = process.env.BOT_USERNAME.replace('@', '');
-    console.log(`📱 Telegram Bot: https://t.me/${botUsername}`);
-  } else {
-    console.log(`📱 Telegram Bot: not configured`);
+  if (config.botUsername) {
+    const cleanBotUsername = config.botUsername.replace('@', '');
+    console.log(`📱 Telegram Bot: https://t.me/${cleanBotUsername}`);
   }
 });
 
