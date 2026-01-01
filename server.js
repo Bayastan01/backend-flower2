@@ -8,7 +8,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app', 'https://backend-flower-kyrgyz.up.railway.app'],
+  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app', 'https://backend-flower2-production.up.railway.app'],
   credentials: true
 }));
 app.use(express.json({ limit: '50mb' }));
