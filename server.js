@@ -9,7 +9,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app'],
+  origin: '*',
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
@@ -30,23 +30,6 @@ console.log('- FRONTEND_URL:', process.env.FRONTEND_URL || 'Not set');
 console.log('- BACKEND_URL:', process.env.BACKEND_URL || 'Not set');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 
-// Инициализация Google OAuth
-let googleClient;
-if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
-  googleClient = new OAuth2Client(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    `${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`
-  );
-  console.log('✅ Google OAuth initialized');
-} else {
-  console.error('❌ GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not found');
-  googleClient = null;
-}
-
-const channelId = process.env.CHANNEL_ID;
-const adminChatId = process.env.ADMIN_CHAT_ID;
-
 // Хранение данных
 const users = new Map();
 const sessions = new Map();
@@ -66,9 +49,27 @@ function generateStateToken() {
   return 'state_' + Date.now() + '_' + crypto.randomBytes(16).toString('hex');
 }
 
-// Инициализация Telegram бота
-let bot;
+// Инициализация Google OAuth (ленивая инициализация)
+let googleClient = null;
+let bot = null;
 let botInitialized = false;
+
+function initializeGoogleOAuth() {
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+    try {
+      googleClient = new OAuth2Client(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        `${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`
+      );
+      console.log('✅ Google OAuth initialized');
+    } catch (error) {
+      console.error('❌ Google OAuth init error:', error.message);
+    }
+  } else {
+    console.error('❌ GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not found');
+  }
+}
 
 function initializeTelegramBot() {
   if (!process.env.BOT_TOKEN) {
@@ -194,11 +195,13 @@ function initializeTelegramBot() {
   }
 }
 
+// Инициализация при запуске
+initializeGoogleOAuth();
 initializeTelegramBot();
 
 // ==================== ROUTES ====================
 
-// Корневой маршрут - ДОБАВЛЕН
+// Корневой маршрут
 app.get('/', (req, res) => {
   res.json({
     message: '🌺 Flower Market Backend API',
@@ -313,7 +316,7 @@ app.post('/api/auth/google/url', (req, res) => {
     if (!googleClient) {
       return res.status(500).json({ 
         success: false, 
-        error: 'Google OAuth not configured' 
+        error: 'Google OAuth not configured. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in environment variables.' 
       });
     }
 
@@ -386,6 +389,10 @@ app.get('/api/auth/google/callback', async (req, res) => {
     const { telegramId } = pendingAuthData;
     pendingAuth.delete(state);
 
+    if (!googleClient) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}/?error=google_oauth_not_configured`);
+    }
+
     // Обмениваем код на токен
     const { tokens } = await googleClient.getToken(code);
     googleClient.setCredentials(tokens);
@@ -450,7 +457,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
     console.log(`✅ User authenticated: ${user.googleInfo.name} (${user.googleInfo.email})`);
     
     // Отправляем уведомление администратору
-    if (botInitialized && adminChatId) {
+    if (botInitialized && process.env.ADMIN_CHAT_ID) {
       try {
         let adminMessage = `📋 *Новый пользователь авторизовался*\n\n`;
         adminMessage += `👤 *Имя:* ${user.googleInfo.name}\n`;
@@ -464,7 +471,7 @@ app.get('/api/auth/google/callback', async (req, res) => {
         adminMessage += `✅ *Статус:* Автоматически одобрен\n`;
         adminMessage += `⏰ *Время:* ${new Date().toLocaleString('ru-RU')}`;
         
-        await bot.sendMessage(adminChatId, adminMessage, { parse_mode: 'Markdown' });
+        await bot.sendMessage(process.env.ADMIN_CHAT_ID, adminMessage, { parse_mode: 'Markdown' });
         console.log(`📤 Admin notification sent`);
       } catch (botError) {
         console.error('Admin notification failed:', botError.message);
@@ -651,9 +658,9 @@ app.post('/api/publish-ad', async (req, res) => {
     let error = null;
     
     // Отправляем в канал
-    if (botInitialized && channelId) {
+    if (botInitialized && process.env.CHANNEL_ID) {
       try {
-        const sentMessage = await bot.sendMessage(channelId, telegramMessage, {
+        const sentMessage = await bot.sendMessage(process.env.CHANNEL_ID, telegramMessage, {
           parse_mode: 'Markdown'
         });
         
@@ -699,7 +706,7 @@ app.post('/api/publish-ad', async (req, res) => {
         let userMessage;
         
         if (telegramMessageId) {
-          const chatId = channelId ? channelId.toString().replace('-100', '') : '';
+          const chatId = process.env.CHANNEL_ID ? process.env.CHANNEL_ID.toString().replace('-100', '') : '';
           const messageLink = `https://t.me/c/${chatId}/${telegramMessageId}`;
           userMessage = `✅ *Ваше объявление опубликовано!*\n\n` +
             `*Заголовок:* ${title}\n` +
@@ -816,7 +823,7 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000); // Каждый час
 
-// 404 handler - должен быть ПОСЛЕ всех маршрутов
+// 404 handler
 app.use((req, res) => {
   console.log(`404 Not Found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
@@ -851,13 +858,18 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 CORS enabled for: https://flowers-telegram-kyrgyzstan.up.railway.app`);
-  console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
-  console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
+  console.log(`🌍 CORS enabled for all origins`);
+  console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive (BOT_TOKEN missing)'}`);
+  console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured (GOOGLE_CLIENT_ID missing)'}`);
   console.log(`\n=== SERVER STARTED SUCCESSFULLY ===`);
   console.log(`1. Main URL: https://backend-flower2-production.up.railway.app/`);
   console.log(`2. Health check: https://backend-flower2-production.up.railway.app/health`);
   console.log(`3. Google OAuth Callback: ${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`);
+  console.log(`\n=== IMPORTANT ===`);
+  console.log(`Set these environment variables in Railway dashboard:`);
+  console.log(`1. BOT_TOKEN - Your Telegram bot token from @BotFather`);
+  console.log(`2. GOOGLE_CLIENT_ID - From Google Cloud Console`);
+  console.log(`3. GOOGLE_CLIENT_SECRET - From Google Cloud Console`);
 });
 
 process.on('SIGINT', () => {
