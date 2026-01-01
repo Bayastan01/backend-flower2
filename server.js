@@ -14,275 +14,306 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// ФИКСИРОВАННАЯ ССЫЛКА НА ФРОНТЕНД
-const FRONTEND_URL = 'https://flowers-telegram-kyrgyzstan.up.railway.app';
+// ФИКСИРОВАННАЯ ССЫЛКА - ВАШ САЙТ
+const CORRECT_FRONTEND_URL = 'https://flowers-telegram-kyrgyzstan.up.railway.app';
+const WRONG_FRONTEND_URL = 'https://flowers-telegram-kyrgyzstan.onrender.com'; // старый сайт
 
-// Проверяем переменные окружения
-console.log('=== ENVIRONMENT CHECK ===');
-console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? '✓ Set' : '✗ Missing');
-console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
-console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
-console.log('- FRONTEND_URL (from env):', process.env.FRONTEND_URL || 'Not set');
-console.log('- FRONTEND_URL (fixed):', FRONTEND_URL);
-console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
+console.log('🔗 === FRONTEND URLS ===');
+console.log('✅ Правильный URL:', CORRECT_FRONTEND_URL);
+console.log('❌ Старый URL (возможно кеширован):', WRONG_FRONTEND_URL);
+
+const channelId = process.env.CHANNEL_ID;
+const adminChatId = process.env.ADMIN_CHAT_ID;
 
 // Инициализация Google OAuth
 let googleClient;
 if (process.env.GOOGLE_CLIENT_ID) {
   googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-  console.log('✅ Google OAuth initialized');
 }
-
-const channelId = process.env.CHANNEL_ID;
-const adminChatId = process.env.ADMIN_CHAT_ID;
 
 // Хранение пользователей
 const users = new Map();
 
-// Инициализация Telegram бота с polling
+// Инициализация Telegram бота
 let bot;
 let botInitialized = false;
 
 function initializeTelegramBot() {
   if (!process.env.BOT_TOKEN) {
-    console.warn('⚠️ BOT_TOKEN not found, Telegram bot disabled');
+    console.warn('⚠️ BOT_TOKEN not found');
     return;
   }
 
   try {
-    console.log('🤖 Initializing Telegram bot with polling...');
+    console.log('🤖 Запускаю Telegram бота...');
     
-    // Создаем бота с polling
     bot = new TelegramBot(process.env.BOT_TOKEN, {
       polling: {
         interval: 3000,
         timeout: 30,
-        autoStart: true,
-        params: {
-          timeout: 30
-        }
+        autoStart: true
       }
     });
 
-    // Обработчик команды /start
+    // ========== КОМАНДА /start ==========
     bot.onText(/\/start/, (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id.toString();
       const firstName = msg.from.first_name || 'Пользователь';
-      const username = msg.from.username ? `@${msg.from.username}` : 'без username';
       
-      console.log(`👤 User /start: ${firstName} (${username}, ID: ${userId})`);
-      console.log(`🔗 Using frontend URL: ${FRONTEND_URL}`);
+      console.log(`👤 Команда /start от ${firstName} (ID: ${userId})`);
       
-      // Сохраняем пользователя если его еще нет
+      // Сохраняем пользователя
       if (!users.has(userId)) {
-        const user = {
+        users.set(userId, {
           id: userId,
           telegramId: userId,
           name: firstName,
-          username: username,
           isLoggedIn: false,
           createdAt: new Date(),
-          isApproved: true,
-          ads: []
-        };
-        
-        users.set(userId, user);
-        console.log(`✅ Telegram user saved: ${firstName} (${userId})`);
+          isApproved: true
+        });
       }
       
-      const options = {
+      // Создаем клавиатуру с КОРРЕКТНОЙ ссылкой
+      const keyboard = {
         reply_markup: {
-          inline_keyboard: [[
-            {
-              text: '🌺 Создать объявление',
-              web_app: { url: FRONTEND_URL } // ИСПОЛЬЗУЕМ ФИКСИРОВАННУЮ ССЫЛКУ
-            }
-          ]]
+          inline_keyboard: [
+            [
+              {
+                text: '🌺 Создать объявление (Web App)',
+                web_app: { url: CORRECT_FRONTEND_URL }
+              }
+            ],
+            [
+              {
+                text: '🌐 Открыть в браузере',
+                url: CORRECT_FRONTEND_URL
+              }
+            ],
+            [
+              {
+                text: '🔄 Проверить ссылку',
+                callback_data: 'check_url'
+              }
+            ]
+          ]
         }
       };
       
-      bot.sendMessage(chatId, 
-        `Добро пожаловать в Flower Market, ${firstName}! 🌸\n\n` +
-        `Нажмите кнопку ниже, чтобы создать объявление о продаже цветов.\n\n` +
-        `*Ваш ID:* ${userId}\n` +
-        `*Username:* ${username}\n\n` +
-        `Сохраните ваш ID, он понадобится для авторизации.\n\n` +
-        `🌐 *Ссылка:* ${FRONTEND_URL}`, 
-        { parse_mode: 'Markdown', ...options }
-      ).catch(err => console.error('Error sending start message:', err.message));
-    });
-
-    // Обработчик команды /id
-    bot.onText(/\/id/, (msg) => {
-      const chatId = msg.chat.id;
-      const userId = msg.from.id;
-      const username = msg.from.username ? `@${msg.from.username}` : 'не указан';
+      const message = `👋 Добро пожаловать в Flower Market, ${firstName}! 🌸\n\n` +
+        `Я помогу вам создать объявление о продаже цветов.\n\n` +
+        `*📱 Используйте Web App кнопку:*\n` +
+        `Откроет приложение прямо в Telegram\n\n` +
+        `*🌐 Или откройте в браузере:*\n` +
+        `${CORRECT_FRONTEND_URL}\n\n` +
+        `*🆔 Ваш Telegram ID:* \`${userId}\`\n` +
+        `Сохраните этот ID для авторизации.\n\n` +
+        `*Проблемы с ссылкой?* Нажмите "Проверить ссылку"`;
       
-      bot.sendMessage(chatId,
-        `*Ваш Telegram ID:* \`${userId}\`\n` +
-        `*Username:* ${username}\n\n` +
-        `Сохраните этот ID. Он понадобится для авторизации в веб-приложении.\n\n` +
-        `*Как использовать:*\n` +
-        `1. Откройте веб-приложение по кнопке ниже\n` +
-        `2. Войдите через Google\n` +
-        `3. Введите этот ID когда спросят\n\n` +
-        `🌐 *Ссылка на сайт:* ${FRONTEND_URL}`,
-        { 
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '🌺 Открыть веб-приложение',
-                web_app: { url: FRONTEND_URL } // ИСПОЛЬЗУЕМ ФИКСИРОВАННУЮ ССЫЛКУ
-              }
-            ]]
-          }
-        }
-      );
+      bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...keyboard,
+        disable_web_page_preview: true
+      }).catch(err => console.error('Ошибка отправки:', err.message));
     });
 
-    // Обработчик команды /help
-    bot.onText(/\/help/, (msg) => {
+    // ========== КОМАНДА /url ==========
+    bot.onText(/\/url/, (msg) => {
       const chatId = msg.chat.id;
       
-      bot.sendMessage(chatId,
-        `*Flower Market Bot Help* 🌸\n\n` +
-        `*/start* - Запустить бота и получить кнопку для создания объявления\n` +
-        `*/id* - Показать ваш Telegram ID (нужен для авторизации)\n` +
-        `*/help* - Показать это сообщение\n\n` +
-        `*Как создать объявление:*\n` +
-        `1. Нажмите /start и кнопку "Создать объявление"\n` +
-        `2. Войдите через Google в веб-приложении\n` +
-        `3. Введите ваш Telegram ID (команда /id)\n` +
-        `4. Заполните форму объявления\n` +
-        `5. Ваше объявление будет опубликовано в канале\n\n` +
-        `*Канал с объявлениями:* @flowers_market_kg\n` +
-        `*Веб-сайт:* ${FRONTEND_URL}\n` +
-        `*Проблемы?* Напишите админу.`,
-        { 
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
+      const message = `🔗 *Доступные ссылки на Flower Market*\n\n` +
+        `*🌐 Основной сайт:*\n` +
+        `${CORRECT_FRONTEND_URL}\n\n` +
+        `*📱 Web App ссылка:*\n` +
+        `tg://webapp?url=${encodeURIComponent(CORRECT_FRONTEND_URL)}\n\n` +
+        `*Как открыть:*\n` +
+        `1. Нажмите кнопку ниже\n` +
+        `2. Или скопируйте ссылку\n` +
+        `3. Вставьте в браузер`;
+      
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [
               {
-                text: '🌺 Создать объявление',
-                web_app: { url: FRONTEND_URL } // ИСПОЛЬЗУЕМ ФИКСИРОВАННУЮ ССЫЛКУ
-              },
-              {
-                text: '📢 Наш канал',
-                url: 'https://t.me/flowers_market_kg'
+                text: '🌐 Открыть сайт',
+                url: CORRECT_FRONTEND_URL
               }
-            ]]
-          }
+            ],
+            [
+              {
+                text: '📱 Открыть Web App',
+                web_app: { url: CORRECT_FRONTEND_URL }
+              }
+            ],
+            [
+              {
+                text: '🔗 Скопировать ссылку',
+                callback_data: 'copy_url'
+              }
+            ]
+          ]
         }
-      );
+      };
+      
+      bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...keyboard,
+        disable_web_page_preview: true
+      });
     });
 
-    // Обработчик ошибок polling
-    bot.on('polling_error', (error) => {
-      console.error('❌ Polling error:', error.code, error.message);
+    // ========== КОМАНДА /fix ==========
+    bot.onText(/\/fix/, (msg) => {
+      const chatId = msg.chat.id;
       
-      // Пробуем перезапустить polling при ошибках
-      if (error.code === 'EFATAL' || error.code === 'ETELEGRAM') {
-        console.log('🔄 Restarting bot polling due to error...');
-        setTimeout(() => {
-          bot.stopPolling();
-          bot.startPolling();
-        }, 5000);
+      const message = `🔧 *Исправление проблем со ссылкой*\n\n` +
+        `Если Web App открывает старый сайт:\n\n` +
+        `1. *Полностью закройте Telegram*\n` +
+        `2. *Перезапустите Telegram*\n` +
+        `3. *Напишите /start снова*\n\n` +
+        `Или используйте прямую ссылку:\n` +
+        `${CORRECT_FRONTEND_URL}\n\n` +
+        `*Проверьте текущую ссылку:*`;
+      
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '🔗 Тест Web App',
+                web_app: { url: CORRECT_FRONTEND_URL + '?test=' + Date.now() }
+              }
+            ],
+            [
+              {
+                text: '🌐 Прямая ссылка',
+                url: CORRECT_FRONTEND_URL
+              }
+            ]
+          ]
+        }
+      };
+      
+      bot.sendMessage(chatId, message, {
+        parse_mode: 'Markdown',
+        ...keyboard
+      });
+    });
+
+    // ========== ОБРАБОТКА CALLBACK КНОПОК ==========
+    bot.on('callback_query', (callbackQuery) => {
+      const chatId = callbackQuery.message.chat.id;
+      const data = callbackQuery.data;
+      const messageId = callbackQuery.message.message_id;
+      
+      if (data === 'check_url') {
+        const testUrl = CORRECT_FRONTEND_URL + '?test=' + Date.now();
+        
+        bot.answerCallbackQuery(callbackQuery.id, {
+          text: 'Проверяю ссылку...'
+        });
+        
+        // Редактируем сообщение с новой кнопкой
+        const keyboard = {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: '🔄 Тестовая ссылка (без кеша)',
+                  web_app: { url: testUrl }
+                }
+              ],
+              [
+                {
+                  text: '🌐 Основная ссылка',
+                  url: CORRECT_FRONTEND_URL
+                }
+              ]
+            ]
+          }
+        };
+        
+        bot.editMessageReplyMarkup(keyboard.reply_markup, {
+          chat_id: chatId,
+          message_id: messageId
+        });
+        
+      } else if (data === 'copy_url') {
+        bot.answerCallbackQuery(callbackQuery.id, {
+          text: 'Ссылка скопирована! Откройте в браузере: ' + CORRECT_FRONTEND_URL,
+          show_alert: true
+        });
       }
     });
 
-    // Успешная инициализация
+    // ========== ПРОВЕРКА БОТА ==========
     bot.getMe().then(botInfo => {
-      console.log(`✅ Telegram Bot started: @${botInfo.username}`);
-      console.log(`🤖 Bot ID: ${botInfo.id}`);
-      console.log(`👋 Bot name: ${botInfo.first_name}`);
+      console.log(`✅ Бот запущен: @${botInfo.username}`);
       botInitialized = true;
       
-      // Настраиваем команды бота
+      // Устанавливаем команды бота
       bot.setMyCommands([
         { command: 'start', description: 'Запустить бота' },
-        { command: 'id', description: 'Показать мой ID' },
-        { command: 'help', description: 'Помощь' }
+        { command: 'url', description: 'Показать ссылки' },
+        { command: 'fix', description: 'Исправить проблемы' },
+        { command: 'id', description: 'Мой Telegram ID' }
       ]).then(() => {
-        console.log('✅ Bot commands configured');
+        console.log('✅ Команды бота настроены');
       }).catch(err => {
-        console.error('Error setting bot commands:', err.message);
+        console.error('Ошибка настройки команд:', err.message);
       });
       
-      // Проверяем, какая ссылка используется
-      console.log(`🔗 Bot will use this web app URL: ${FRONTEND_URL}`);
+      console.log('\n📌 Доступные команды:');
+      console.log('/start - Основная команда');
+      console.log('/url - Показать все ссылки');
+      console.log('/fix - Исправить проблемы со ссылкой');
+      console.log('/id - Показать ваш ID');
       
-    }).catch(error => {
-      console.error('❌ Failed to get bot info:', error.message);
+    }).catch(err => {
+      console.error('❌ Ошибка бота:', err.message);
       botInitialized = false;
     });
 
-    console.log('🤖 Telegram bot polling initialized');
-    
   } catch (error) {
-    console.error('❌ Failed to initialize Telegram bot:', error.message);
-    botInitialized = false;
+    console.error('❌ Ошибка инициализации бота:', error.message);
   }
 }
 
-// Инициализируем бота
 initializeTelegramBot();
 
-// Функция для отправки сообщений через бота
-async function sendTelegramMessage(chatId, message, options = {}) {
-  if (!bot || !botInitialized) {
-    console.warn('⚠️ Telegram bot not available');
-    return null;
-  }
-  
-  try {
-    const result = await bot.sendMessage(chatId, message, options);
-    console.log(`✅ Message sent to ${chatId}`);
-    return result;
-  } catch (error) {
-    console.error('❌ Error sending Telegram message:', error.message);
-    return null;
-  }
-}
+// ==================== API РОУТЫ ====================
 
-// ==================== ROUTES ====================
-
-// Корневой маршрут
 app.get('/', (req, res) => {
   res.json({
-    status: 'Flower Market Backend API',
-    message: 'API is running',
-    timestamp: new Date().toISOString(),
-    botStatus: botInitialized ? 'active' : 'inactive',
-    frontendUrl: FRONTEND_URL,
-    usersCount: users.size,
-    endpoints: {
-      root: 'GET /',
-      health: 'GET /health',
-      userStatus: 'GET /api/user/:userId/status',
-      googleAuth: 'POST /api/auth/google',
-      publishAd: 'POST /api/publish-ad',
-      getUser: 'GET /api/user/:userId',
-      approvalStatus: 'GET /api/user/:userId/approval-status'
-    }
+    service: 'Flower Market API',
+    correct_frontend_url: CORRECT_FRONTEND_URL,
+    telegram_bot: botInitialized ? 'active' : 'inactive',
+    instructions: 'Используйте команды: /start, /url, /fix в боте'
   });
 });
 
-// Health check
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    usersCount: users.size,
-    botInitialized: botInitialized,
-    googleOAuthInitialized: !!googleClient,
-    frontendUrl: FRONTEND_URL,
-    channelId: channelId || 'Not set',
-    adminChatId: adminChatId || 'Not set',
-    environment: process.env.NODE_ENV || 'development'
+  res.json({
+    status: 'ok',
+    correct_url: CORRECT_FRONTEND_URL,
+    bot_ready: botInitialized,
+    time: new Date().toISOString()
   });
+});
+
+// Тестовый endpoint для проверки Web App
+app.get('/api/test-webapp', (req, res) => {
+  const testData = {
+    success: true,
+    message: 'Web App работает!',
+    url: CORRECT_FRONTEND_URL,
+    timestamp: new Date().toISOString(),
+    query: req.query
+  };
+  
+  res.json(testData);
 });
 
 // Авторизация через Google
@@ -295,13 +326,9 @@ app.post('/api/auth/google', async (req, res) => {
     }
 
     if (!googleClient) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Google OAuth not configured' 
-      });
+      return res.status(500).json({ error: 'Google OAuth not configured' });
     }
 
-    // Верификация токена Google
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -309,7 +336,6 @@ app.post('/api/auth/google', async (req, res) => {
 
     const payload = ticket.getPayload();
     
-    // Создаем пользователя
     const user = {
       id: telegramUserId || `user_${Date.now()}`,
       telegramId: telegramUserId,
@@ -319,60 +345,84 @@ app.post('/api/auth/google', async (req, res) => {
       picture: payload.picture,
       isLoggedIn: true,
       createdAt: new Date(),
-      contacts: [],
       isApproved: true,
       ads: []
     };
 
-    // Объединяем с существующими данными если пользователь уже был
-    const existingUser = users.get(telegramUserId);
-    if (existingUser) {
-      user.name = user.name || existingUser.name;
-      user.telegramId = user.telegramId || existingUser.telegramId;
-      user.ads = existingUser.ads || [];
-      user.isApproved = existingUser.isApproved || user.isApproved;
-    }
-
-    // Сохраняем пользователя
     users.set(user.id, user);
     
-    console.log(`✅ New user registered: ${user.name} (ID: ${user.id})`);
+    console.log(`✅ Пользователь зарегистрирован: ${user.name}`);
 
-    // Отправляем приветственное сообщение в Telegram
-    if (botInitialized && user.telegramId) {
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        picture: user.picture,
+        isApproved: true,
+        telegramId: user.telegramId
+      }
+    });
+
+  } catch (error) {
+    console.error('Ошибка Google авторизации:', error);
+    res.status(401).json({ error: 'Authentication failed' });
+  }
+});
+
+// Публикация объявления
+app.post('/api/publish-ad', async (req, res) => {
+  try {
+    const { userId, title, description, price, contactInfo } = req.body;
+    
+    console.log(`📝 Новое объявление: ${title}`);
+    
+    const user = users.get(userId);
+    if (!user) {
+      return res.status(401).json({ error: 'User not found' });
+    }
+
+    const message = `🌸 *${title}* 🌸\n\n` +
+                   `📝 ${description}\n\n` +
+                   `💰 Цена: ${price}\n` +
+                   `📞 Контакты: ${contactInfo}\n\n` +
+                   `👤 Продавец: ${user.name}\n` +
+                   `🕒 ${new Date().toLocaleString('ru-RU')}\n\n` +
+                   `#цветы #${user.name.replace(/\s+/g, '_')}`;
+
+    let messageId = null;
+    
+    if (botInitialized && channelId) {
       try {
-        const welcomeMessage = `👋 *Добро пожаловать в Flower Market, ${user.name}!*\n\n` +
-          `✅ Ваш аккаунт успешно зарегистрирован.\n` +
-          `📧 Email: ${user.email}\n` +
-          `✅ Статус: Автоматически одобрен\n\n` +
-          `Теперь вы можете создавать объявления о продаже цветов!\n\n` +
-          `*Как создать объявление:*\n` +
-          `1. Нажмите кнопку ниже 👇\n` +
-          `2. Заполните форму\n` +
-          `3. Ваше объявление будет опубликовано в канале\n\n` +
-          `🌺 *Желаем успешных продаж!*`;
-
-        const options = {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '🌺 Создать объявление',
-                web_app: { url: FRONTEND_URL } // ИСПОЛЬЗУЕМ ФИКСИРОВАННУЮ ССЫЛКУ
-              }
-            ]]
-          }
-        };
-
-        await sendTelegramMessage(user.telegramId, welcomeMessage, options);
-        console.log(`📤 Welcome message sent to user ${user.telegramId}`);
-      } catch (botError) {
-        console.error('Welcome message failed:', botError.message);
+        const result = await bot.sendMessage(channelId, message, {
+          parse_mode: 'Markdown'
+        });
+        messageId = result.message_id;
+        console.log(`✅ Объявление отправлено в канал, ID: ${messageId}`);
+      } catch (error) {
+        console.error('Ошибка отправки в канал:', error.message);
       }
     }
 
     res.json({
       success: true,
+      message: 'Объявление опубликовано',
+      messageId: messageId
+    });
+
+  } catch (error) {
+    console.error('Ошибка публикации:', error);
+    res.status(500).json({ error: 'Failed to publish' });
+  }
+});
+
+app.get('/api/user/:userId/status', (req, res) => {
+  const user = users.get(req.params.userId);
+  
+  if (user && user.isLoggedIn) {
+    res.json({
+      isLoggedIn: true,
       user: {
         id: user.id,
         name: user.name,
@@ -382,189 +432,19 @@ app.post('/api/auth/google', async (req, res) => {
         telegramId: user.telegramId
       }
     });
-
-  } catch (error) {
-    console.error('Google auth error:', error);
-    res.status(401).json({ 
-      success: false, 
-      error: 'Authentication failed',
-      details: error.message 
-    });
-  }
-});
-
-// Публикация объявления
-app.post('/api/publish-ad', async (req, res) => {
-  try {
-    const { userId, title, description, price, contactInfo } = req.body;
-    
-    console.log(`📝 New ad submission from ${userId}:`, { title, price });
-    
-    // Проверяем существование пользователя
-    const user = users.get(userId);
-    if (!user || !user.isLoggedIn) {
-      return res.status(401).json({ 
-        success: false, 
-        error: 'User not authenticated' 
-      });
-    }
-
-    // Формируем сообщение для Telegram
-    const telegramMessage = `🌸 *${title}* 🌸\n\n` +
-                   `📝 *Описание:*\n${description}\n\n` +
-                   `💰 *Цена:* ${price}\n` +
-                   `📞 *Контакты:* ${contactInfo}\n\n` +
-                   `👤 *Продавец:* ${user.name}\n` +
-                   `🕒 *Дата:* ${new Date().toLocaleString('ru-RU')}\n\n` +
-                   `#цветы #${user.name.replace(/\s+/g, '_')}`;
-
-    let telegramMessageId = null;
-    let telegramError = null;
-    
-    // Отправляем в канал
-    if (botInitialized && channelId) {
-      try {
-        console.log(`📤 Sending ad to channel ${channelId}`);
-        const sentMessage = await sendTelegramMessage(channelId, telegramMessage, {
-          parse_mode: 'Markdown'
-        });
-        
-        if (sentMessage) {
-          telegramMessageId = sentMessage.message_id;
-          console.log(`✅ Ad published, message ID: ${telegramMessageId}`);
-        } else {
-          telegramError = 'Failed to send message to channel';
-        }
-      } catch (error) {
-        telegramError = error.message;
-        console.error('Telegram send error:', error.message);
-      }
-    } else {
-      telegramError = 'Bot or channel not configured';
-      console.warn('Bot or channel not configured');
-    }
-
-    // Сохраняем информацию об объявлении
-    const ad = {
-      id: Date.now(),
-      userId,
-      title,
-      description,
-      price,
-      contactInfo,
-      telegramMessageId,
-      publishedAt: new Date(),
-      status: telegramMessageId ? 'published' : 'failed',
-      error: telegramError
-    };
-
-    user.ads = user.ads || [];
-    user.ads.push(ad);
-    users.set(userId, user);
-
-    res.json({
-      success: true,
-      message: telegramMessageId ? 'Объявление успешно опубликовано в Telegram!' : 'Объявление сохранено, но не отправлено в Telegram',
-      adId: ad.id,
-      telegramMessageId,
-      error: telegramError,
-      preview: {
-        title: title,
-        price: price,
-        seller: user.name
-      }
-    });
-
-  } catch (error) {
-    console.error('Error publishing ad:', error);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Failed to publish ad',
-      details: error.message 
-    });
-  }
-});
-
-// Проверка статуса пользователя
-app.get('/api/user/:userId/status', async (req, res) => {
-  try {
-    const userId = req.params.userId;
-    const user = users.get(userId);
-    
-    if (user && user.isLoggedIn) {
-      return res.json({
-        isLoggedIn: true,
-        user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          picture: user.picture,
-          googleId: user.googleId,
-          isApproved: user.isApproved || false,
-          telegramId: user.telegramId || null,
-          adsCount: (user.ads || []).length
-        }
-      });
-    }
-    
+  } else {
     res.json({ isLoggedIn: false });
-  } catch (error) {
-    console.error('Error checking user status:', error);
-    res.status(500).json({ error: 'Internal server error' });
   }
-});
-
-// Проверка статуса одобрения
-app.get('/api/user/:userId/approval-status', (req, res) => {
-  const userId = req.params.userId;
-  const user = users.get(userId);
-  
-  res.json({
-    isApproved: user ? (user.isApproved || false) : false
-  });
-});
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Route not found',
-    requestedUrl: req.originalUrl
-  });
-});
-
-// Error handler
-app.use((err, req, res, next) => {
-  console.error('Server error:', err.stack);
-  res.status(500).json({ 
-    error: 'Internal server error',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌺 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📺 Channel ID: ${channelId || 'Not set'}`);
-  console.log(`👑 Admin Chat ID: ${adminChatId || 'Not set'}`);
-  console.log(`🌍 CORS enabled for: ${FRONTEND_URL}`);
-  console.log(`\n=== IMPORTANT ===`);
-  console.log(`1. Telegram bot polling is enabled`);
-  console.log(`2. Write /start to your bot in Telegram`);
-  console.log(`3. API URL: http://localhost:${PORT}`);
-  console.log(`4. Frontend URL: ${FRONTEND_URL}`);
-  console.log(`\n=== BOT STATUS ===`);
-  console.log(`Bot initialized: ${botInitialized ? '✅ Yes' : '❌ No'}`);
-});
-
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n🛑 Shutting down gracefully...');
-  
-  if (bot) {
-    bot.stopPolling();
-    console.log('✅ Bot polling stopped');
-  }
-  
-  process.exit(0);
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  console.log(`🌐 Корректный фронтенд: ${CORRECT_FRONTEND_URL}`);
+  console.log(`🤖 Статус бота: ${botInitialized ? '✅ Готов' : '❌ Не готов'}`);
+  console.log(`\n📌 ДЕЙСТВИЯ ДЛЯ РЕШЕНИЯ ПРОБЛЕМЫ:`);
+  console.log(`1. Напишите боту /fix для инструкций`);
+  console.log(`2. Используйте /url для прямых ссылок`);
+  console.log(`3. Закройте и перезапустите Telegram`);
+  console.log(`\n🔗 Для теста: ${CORRECT_FRONTEND_URL}/api/test-webapp`);
 });
