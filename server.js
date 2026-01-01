@@ -198,6 +198,34 @@ initializeTelegramBot();
 
 // ==================== ROUTES ====================
 
+// Корневой маршрут - ДОБАВЛЕН
+app.get('/', (req, res) => {
+  res.json({
+    message: '🌺 Flower Market Backend API',
+    version: '1.0.0',
+    status: 'online',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/health',
+      telegramData: '/api/telegram-data/:tempId',
+      userCheck: '/api/user/check/:telegramId',
+      googleAuthUrl: 'POST /api/auth/google/url',
+      googleCallback: '/api/auth/google/callback',
+      sessionCheck: '/api/session/:sessionToken',
+      draftSave: 'POST /api/draft/save',
+      draftGet: '/api/draft/:sessionToken',
+      publishAd: 'POST /api/publish-ad',
+      logout: 'POST /api/logout'
+    },
+    stats: {
+      users: users.size,
+      sessions: sessions.size,
+      botInitialized: botInitialized,
+      googleOAuth: !!googleClient
+    }
+  });
+});
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({ 
@@ -211,26 +239,6 @@ app.get('/health', (req, res) => {
     frontendUrl: process.env.FRONTEND_URL || 'Not set',
     backendUrl: process.env.BACKEND_URL || 'Not set',
     environment: process.env.NODE_ENV || 'development'
-  });
-});
-
-// Корневой маршрут
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Flower Market Backend API',
-    version: '1.0.0',
-    endpoints: {
-      health: '/health',
-      telegramData: '/api/telegram-data/:tempId',
-      userCheck: '/api/user/check/:telegramId',
-      googleAuthUrl: '/api/auth/google/url (POST)',
-      googleCallback: '/api/auth/google/callback',
-      sessionCheck: '/api/session/:sessionToken',
-      draftSave: '/api/draft/save (POST)',
-      draftGet: '/api/draft/:sessionToken',
-      publishAd: '/api/publish-ad (POST)',
-      logout: '/api/logout (POST)'
-    }
   });
 });
 
@@ -808,13 +816,26 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000); // Каждый час
 
-// 404 handler
+// 404 handler - должен быть ПОСЛЕ всех маршрутов
 app.use((req, res) => {
   console.log(`404 Not Found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
     error: 'Route not found',
     requestedUrl: req.originalUrl,
-    method: req.method
+    method: req.method,
+    availableEndpoints: [
+      'GET /',
+      'GET /health',
+      'GET /api/telegram-data/:tempId',
+      'GET /api/user/check/:telegramId',
+      'POST /api/auth/google/url',
+      'GET /api/auth/google/callback',
+      'GET /api/session/:sessionToken',
+      'POST /api/draft/save',
+      'GET /api/draft/:sessionToken',
+      'POST /api/publish-ad',
+      'POST /api/logout'
+    ]
   });
 });
 
@@ -833,9 +854,10 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 CORS enabled for: https://flowers-telegram-kyrgyzstan.up.railway.app`);
   console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
   console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
-  console.log(`\n=== IMPORTANT ===`);
-  console.log(`1. Google OAuth Callback URL: ${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`);
-  console.log(`2. Make sure all environment variables are set correctly`);
+  console.log(`\n=== SERVER STARTED SUCCESSFULLY ===`);
+  console.log(`1. Main URL: https://backend-flower2-production.up.railway.app/`);
+  console.log(`2. Health check: https://backend-flower2-production.up.railway.app/health`);
+  console.log(`3. Google OAuth Callback: ${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`);
 });
 
 process.on('SIGINT', () => {
