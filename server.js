@@ -22,19 +22,25 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Проверка переменных окружения
 console.log('=== ENVIRONMENT CHECK ===');
 console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set (${process.env.GOOGLE_CLIENT_ID.substring(0, 20)}...)` : '✗ Missing');
+console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? '✓ Set' : '✗ Missing');
+console.log('- GOOGLE_CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? '✓ Set' : '✗ Missing');
 console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
 console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
 console.log('- FRONTEND_URL:', process.env.FRONTEND_URL || 'Not set');
+console.log('- BACKEND_URL:', process.env.BACKEND_URL || 'Not set');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 
-// Инициализация Google OAuth - УПРОЩЕННАЯ ВЕРСИЯ
+// Инициализация Google OAuth
 let googleClient;
-if (process.env.GOOGLE_CLIENT_ID) {
-  googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  googleClient = new OAuth2Client(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`
+  );
   console.log('✅ Google OAuth initialized');
 } else {
-  console.error('❌ GOOGLE_CLIENT_ID not found');
+  console.error('❌ GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not found');
   googleClient = null;
 }
 
@@ -45,6 +51,7 @@ const adminChatId = process.env.ADMIN_CHAT_ID;
 const users = new Map();
 const sessions = new Map();
 const telegramData = new Map();
+const pendingAuth = new Map();
 
 // Генерация сессионного токена
 function generateSessionToken() {
@@ -53,6 +60,10 @@ function generateSessionToken() {
 
 function generateTempId() {
   return 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function generateStateToken() {
+  return 'state_' + Date.now() + '_' + crypto.randomBytes(16).toString('hex');
 }
 
 // Инициализация Telegram бота
@@ -164,13 +175,6 @@ function initializeTelegramBot() {
       }
     });
 
-    // Обработка текстовых сообщений
-    bot.on('message', async (msg) => {
-      if (msg.text && !msg.text.startsWith('/')) {
-        console.log(`📩 Message from ${msg.chat.id}: ${msg.text.substring(0, 50)}...`);
-      }
-    });
-
     // Успешная инициализация
     bot.getMe().then(botInfo => {
       console.log(`✅ Telegram Bot started: @${botInfo.username}`);
@@ -205,6 +209,7 @@ app.get('/health', (req, res) => {
     googleOAuthInitialized: !!googleClient,
     googleClientId: process.env.GOOGLE_CLIENT_ID ? 'Set' : 'Missing',
     frontendUrl: process.env.FRONTEND_URL || 'Not set',
+    backendUrl: process.env.BACKEND_URL || 'Not set',
     environment: process.env.NODE_ENV || 'development'
   });
 });
@@ -265,23 +270,11 @@ app.get('/api/user/check/:telegramId', (req, res) => {
   }
 });
 
-// Упрощенная авторизация через Google (без redirect URI)
-app.post('/api/auth/google', async (req, res) => {
-  console.log('🔐 Google auth request received');
-  
+// Генерация URL для авторизации Google
+app.post('/api/auth/google/url', (req, res) => {
   try {
-    const { token, telegramId } = req.body;
+    const { telegramId } = req.body;
     
-    console.log('Token received:', token ? 'Yes' : 'No');
-    console.log('Telegram ID:', telegramId);
-    
-    if (!token) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'No Google token provided' 
-      });
-    }
-
     if (!telegramId) {
       return res.status(400).json({ 
         success: false, 
@@ -296,10 +289,82 @@ app.post('/api/auth/google', async (req, res) => {
       });
     }
 
-    // Верификация ID токена
-    console.log('Verifying Google token...');
+    // Генерируем state токен
+    const stateToken = generateStateToken();
+    pendingAuth.set(stateToken, {
+      telegramId: telegramId,
+      timestamp: Date.now()
+    });
+
+    // Очищаем через 10 минут
+    setTimeout(() => {
+      pendingAuth.delete(stateToken);
+    }, 10 * 60 * 1000);
+
+    // Генерируем URL для авторизации
+    const authUrl = googleClient.generateAuthUrl({
+      access_type: 'offline',
+      scope: [
+        'https://www.googleapis.com/auth/userinfo.profile',
+        'https://www.googleapis.com/auth/userinfo.email'
+      ],
+      state: stateToken,
+      prompt: 'consent',
+      include_granted_scopes: true
+    });
+
+    console.log(`🔗 Generated Google auth URL for telegramId: ${telegramId}`);
+    
+    res.json({
+      success: true,
+      authUrl: authUrl,
+      stateToken: stateToken
+    });
+
+  } catch (error) {
+    console.error('❌ Error generating auth URL:', error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to generate auth URL',
+      details: error.message 
+    });
+  }
+});
+
+// Callback для Google OAuth
+app.get('/api/auth/google/callback', async (req, res) => {
+  try {
+    const { code, state, error } = req.query;
+    
+    console.log('🔐 Google OAuth callback received');
+    console.log('Code:', code ? 'Received' : 'Missing');
+    console.log('State:', state || 'Missing');
+    console.log('Error:', error || 'None');
+    
+    if (error) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}/?error=${encodeURIComponent(error)}`);
+    }
+
+    if (!code || !state) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}/?error=missing_code_or_state`);
+    }
+
+    // Проверяем state токен
+    const pendingAuthData = pendingAuth.get(state);
+    if (!pendingAuthData) {
+      return res.redirect(`${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}/?error=invalid_state_token`);
+    }
+
+    const { telegramId } = pendingAuthData;
+    pendingAuth.delete(state);
+
+    // Обмениваем код на токен
+    const { tokens } = await googleClient.getToken(code);
+    googleClient.setCredentials(tokens);
+
+    // Получаем информацию о пользователе
     const ticket = await googleClient.verifyIdToken({
-      idToken: token,
+      idToken: tokens.id_token,
       audience: process.env.GOOGLE_CLIENT_ID
     });
 
@@ -338,7 +403,9 @@ app.post('/api/auth/google', async (req, res) => {
       email: payload.email,
       picture: payload.picture,
       emailVerified: payload.email_verified,
-      locale: payload.locale
+      locale: payload.locale,
+      accessToken: tokens.access_token,
+      refreshToken: tokens.refresh_token
     };
     
     user.isLoggedIn = true;
@@ -408,26 +475,14 @@ app.post('/api/auth/google', async (req, res) => {
       }
     }
     
-    res.json({
-      success: true,
-      user: {
-        id: user.id,
-        telegramId: user.telegramId,
-        name: user.googleInfo.name,
-        email: user.googleInfo.email,
-        picture: user.googleInfo.picture,
-        isApproved: user.isApproved
-      },
-      sessionToken: sessionToken
-    });
+    // Перенаправляем на frontend с сессией
+    const redirectUrl = `${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}?session=${sessionToken}`;
+    res.redirect(redirectUrl);
 
   } catch (error) {
-    console.error('❌ Google auth error:', error.message);
-    res.status(401).json({ 
-      success: false, 
-      error: 'Authentication failed',
-      details: error.message 
-    });
+    console.error('❌ Google OAuth callback error:', error.message);
+    const errorMessage = encodeURIComponent(error.message);
+    res.redirect(`${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}/?error=${errorMessage}`);
   }
 });
 
@@ -694,23 +749,44 @@ app.post('/api/logout', async (req, res) => {
   }
 });
 
-// Очистка сессий
+// Очистка старых данных
 setInterval(() => {
   const now = new Date();
-  const SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000;
-  let deleted = 0;
   
+  // Очистка сессий (7 дней)
+  const SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000;
+  let deletedSessions = 0;
   sessions.forEach((user, sessionToken) => {
     if (now - user.lastActivity > SESSION_TIMEOUT) {
       sessions.delete(sessionToken);
-      deleted++;
+      deletedSessions++;
     }
   });
   
-  if (deleted > 0) {
-    console.log(`🧹 Cleaned ${deleted} old sessions`);
+  // Очистка pending auth (10 минут)
+  const PENDING_TIMEOUT = 10 * 60 * 1000;
+  let deletedPending = 0;
+  pendingAuth.forEach((data, token) => {
+    if (now - data.timestamp > PENDING_TIMEOUT) {
+      pendingAuth.delete(token);
+      deletedPending++;
+    }
+  });
+  
+  // Очистка telegram данных (5 минут)
+  const TELEGRAM_TIMEOUT = 5 * 60 * 1000;
+  let deletedTelegram = 0;
+  telegramData.forEach((data, tempId) => {
+    if (now - data.timestamp > TELEGRAM_TIMEOUT) {
+      telegramData.delete(tempId);
+      deletedTelegram++;
+    }
+  });
+  
+  if (deletedSessions > 0 || deletedPending > 0 || deletedTelegram > 0) {
+    console.log(`🧹 Cleaned: ${deletedSessions} sessions, ${deletedPending} pending auth, ${deletedTelegram} telegram data`);
   }
-}, 24 * 60 * 60 * 1000);
+}, 60 * 60 * 1000); // Каждый час
 
 // 404 handler
 app.use((req, res) => {
@@ -736,8 +812,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
   console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
   console.log(`\n=== IMPORTANT ===`);
-  console.log(`1. Bot URL: https://t.me/Flowers_free_bot`);
-  console.log(`2. Make sure GOOGLE_CLIENT_ID is correct`);
+  console.log(`1. Google OAuth Callback URL: ${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`);
+  console.log(`2. Make sure all environment variables are set`);
 });
 
 process.on('SIGINT', () => {
@@ -745,7 +821,3 @@ process.on('SIGINT', () => {
   if (bot) bot.stopPolling();
   process.exit(0);
 });
-
-
-
-// исправь вес
