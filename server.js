@@ -6,18 +6,24 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
+// Middleware - РАСШИРЕННЫЙ CORS
 app.use(cors({
-  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app'],
-  credentials: true
+  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app', 'https://flowers-telegram-kyrgyzstan.up.railway.app/'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
+
+// Обработка preflight запросов
+app.options('*', cors());
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Проверяем переменные окружения
 console.log('=== ENVIRONMENT CHECK ===');
 console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? '✓ Set' : '✗ Missing');
+console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set (${process.env.GOOGLE_CLIENT_ID.substring(0, 10)}...)` : '✗ Missing');
 console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
 console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
 console.log('- FRONTEND_URL:', process.env.FRONTEND_URL || 'Not set');
@@ -25,9 +31,17 @@ console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 
 // Инициализация Google OAuth
 let googleClient;
-if (process.env.GOOGLE_CLIENT_ID) {
-  googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-  console.log('✅ Google OAuth initialized');
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_ID.trim() !== '') {
+  try {
+    googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+    console.log('✅ Google OAuth initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize Google OAuth:', error.message);
+    googleClient = null;
+  }
+} else {
+  console.warn('⚠️ GOOGLE_CLIENT_ID is empty or not set');
+  googleClient = null;
 }
 
 const channelId = process.env.CHANNEL_ID;
@@ -41,8 +55,8 @@ let bot;
 let botInitialized = false;
 
 function initializeTelegramBot() {
-  if (!process.env.BOT_TOKEN) {
-    console.warn('⚠️ BOT_TOKEN not found, Telegram bot disabled');
+  if (!process.env.BOT_TOKEN || process.env.BOT_TOKEN.trim() === '') {
+    console.warn('⚠️ BOT_TOKEN not found or empty, Telegram bot disabled');
     return;
   }
 
@@ -101,7 +115,7 @@ function initializeTelegramBot() {
       bot.sendMessage(chatId, 
         `Добро пожаловать в Flower Market, ${firstName}! 🌸\n\n` +
         `Нажмите кнопку ниже, чтобы создать объявление о продаже цветов.\n\n` +
-        `*Ваш ID:* ${userId}\n` +
+        `*Ваш ID:* \`${userId}\`\n` +
         `*Username:* ${username}\n\n` +
         `Сохраните ваш ID, он понадобится для авторизации.`, 
         { parse_mode: 'Markdown', ...options }
@@ -175,7 +189,6 @@ function initializeTelegramBot() {
     bot.on('polling_error', (error) => {
       console.error('❌ Polling error:', error.code, error.message);
       
-      // Пробуем перезапустить polling при ошибках
       if (error.code === 'EFATAL' || error.code === 'ETELEGRAM') {
         console.log('🔄 Restarting bot polling due to error...');
         setTimeout(() => {
@@ -192,7 +205,6 @@ function initializeTelegramBot() {
       console.log(`👋 Bot name: ${botInfo.first_name}`);
       botInitialized = true;
       
-      // Настраиваем команды бота
       bot.setMyCommands([
         { command: 'start', description: 'Запустить бота' },
         { command: 'id', description: 'Показать мой ID' },
@@ -216,10 +228,8 @@ function initializeTelegramBot() {
   }
 }
 
-// Инициализируем бота
 initializeTelegramBot();
 
-// Функция для отправки сообщений через бота
 async function sendTelegramMessage(chatId, message, options = {}) {
   if (!bot || !botInitialized) {
     console.warn('⚠️ Telegram bot not available');
@@ -238,13 +248,13 @@ async function sendTelegramMessage(chatId, message, options = {}) {
 
 // ==================== ROUTES ====================
 
-// Корневой маршрут
 app.get('/', (req, res) => {
   res.json({
     status: 'Flower Market Backend API',
     message: 'API is running',
     timestamp: new Date().toISOString(),
     botStatus: botInitialized ? 'active' : 'inactive',
+    googleOAuthStatus: googleClient ? 'active' : 'inactive',
     usersCount: users.size,
     endpoints: {
       root: 'GET /',
@@ -259,7 +269,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
@@ -273,7 +282,6 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Тест отправки сообщения
 app.post('/api/send-message/:chatId', async (req, res) => {
   try {
     const chatId = req.params.chatId;
@@ -300,7 +308,6 @@ app.post('/api/send-message/:chatId', async (req, res) => {
   }
 });
 
-// Проверка статуса пользователя
 app.get('/api/user/:userId/status', async (req, res) => {
   try {
     const userId = req.params.userId;
@@ -322,7 +329,6 @@ app.get('/api/user/:userId/status', async (req, res) => {
       });
     }
     
-    // Если пользователь есть в системе по Telegram ID, но не залогинен через Google
     if (user && !user.isLoggedIn) {
       return res.json({
         isLoggedIn: false,
@@ -342,126 +348,125 @@ app.get('/api/user/:userId/status', async (req, res) => {
   }
 });
 
-// Авторизация через Google
 app.post('/api/auth/google', async (req, res) => {
   try {
+    console.log('🔐 Google auth request received');
     const { token, telegramUserId } = req.body;
     
     if (!token) {
-      return res.status(400).json({ error: 'No token provided' });
-    }
-
-    if (!googleClient) {
-      return res.status(500).json({ 
+      console.log('❌ No token provided');
+      return res.status(400).json({ 
         success: false, 
-        error: 'Google OAuth not configured' 
+        error: 'No token provided' 
       });
     }
 
-    // Верификация токена Google
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
+    if (!googleClient) {
+      console.log('❌ Google OAuth not configured');
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Google OAuth not configured on server' 
+      });
+    }
 
-    const payload = ticket.getPayload();
+    console.log('🔑 Verifying Google token...');
     
-    // Создаем пользователя
-    const user = {
-      id: telegramUserId || `user_${Date.now()}`,
-      telegramId: telegramUserId,
-      googleId: payload.sub,
-      name: payload.name,
-      email: payload.email,
-      picture: payload.picture,
-      isLoggedIn: true,
-      createdAt: new Date(),
-      contacts: [],
-      isApproved: true, // Автоматически одобряем
-      ads: []
-    };
+    try {
+      // Верификация токена Google
+      const ticket = await googleClient.verifyIdToken({
+        idToken: token,
+        audience: process.env.GOOGLE_CLIENT_ID
+      });
 
-    // Объединяем с существующими данными если пользователь уже был
-    const existingUser = users.get(telegramUserId);
-    if (existingUser) {
-      // Сохраняем Telegram данные
-      user.name = user.name || existingUser.name;
-      user.telegramId = user.telegramId || existingUser.telegramId;
-      user.ads = existingUser.ads || [];
-      user.isApproved = existingUser.isApproved || user.isApproved;
-    }
+      const payload = ticket.getPayload();
+      console.log('✅ Google token verified for user:', payload.email);
+      
+      // Создаем или обновляем пользователя
+      const userId = telegramUserId || `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
+      const user = {
+        id: userId,
+        telegramId: telegramUserId,
+        googleId: payload.sub,
+        name: payload.name,
+        email: payload.email,
+        picture: payload.picture,
+        isLoggedIn: true,
+        createdAt: new Date(),
+        isApproved: true,
+        ads: []
+      };
 
-    // Сохраняем пользователя
-    users.set(user.id, user);
-    
-    console.log(`✅ New user registered: ${user.name} (ID: ${user.id})`);
-
-    // Отправляем приветственное сообщение в Telegram
-    if (botInitialized && user.telegramId) {
-      try {
-        const welcomeMessage = `👋 *Добро пожаловать в Flower Market, ${user.name}!*\n\n` +
-          `✅ Ваш аккаунт успешно зарегистрирован.\n` +
-          `📧 Email: ${user.email}\n` +
-          `✅ Статус: Автоматически одобрен\n\n` +
-          `Теперь вы можете создавать объявления о продаже цветов!\n\n` +
-          `*Как создать объявление:*\n` +
-          `1. Нажмите кнопку ниже 👇\n` +
-          `2. Заполните форму\n` +
-          `3. Ваше объявление будет опубликовано в канале\n\n` +
-          `🌺 *Желаем успешных продаж!*`;
-
-        const options = {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '🌺 Создать объявление',
-                web_app: { url: process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app' }
-              }
-            ]]
-          }
-        };
-
-        await sendTelegramMessage(user.telegramId, welcomeMessage, options);
-        console.log(`📤 Welcome message sent to user ${user.telegramId}`);
-      } catch (botError) {
-        console.error('Welcome message failed:', botError.message);
+      // Объединяем с существующими данными
+      const existingUser = users.get(telegramUserId);
+      if (existingUser) {
+        user.ads = existingUser.ads || [];
+        user.isApproved = existingUser.isApproved !== undefined ? existingUser.isApproved : true;
       }
-    }
 
-    // Отправляем уведомление админу
-    if (botInitialized && adminChatId) {
-      try {
-        const adminMessage = `📋 *Новый пользователь зарегистрировался*\n\n` +
-          `👤 Имя: ${user.name}\n` +
-          `📧 Email: ${user.email}\n` +
-          `🆔 User ID: ${user.id}\n` +
-          (user.telegramId ? `📱 Telegram ID: ${user.telegramId}\n` : '') +
-          `✅ Статус: Автоматически одобрен\n` +
-          `⏰ Время: ${new Date().toLocaleString('ru-RU')}`;
+      // Сохраняем пользователя
+      users.set(userId, user);
+      users.set(telegramUserId, user); // Сохраняем также по telegram ID для быстрого доступа
+      
+      console.log(`✅ User registered: ${user.name} (ID: ${userId})`);
 
-        await sendTelegramMessage(adminChatId, adminMessage, { parse_mode: 'Markdown' });
-        console.log(`📤 Admin notification sent to ${adminChatId}`);
-      } catch (botError) {
-        console.error('Admin notification failed:', botError.message);
+      // Отправляем приветственное сообщение в Telegram
+      if (botInitialized && user.telegramId) {
+        try {
+          const welcomeMessage = `👋 *Добро пожаловать в Flower Market, ${user.name}!*\n\n` +
+            `✅ Ваш аккаунт успешно зарегистрирован.\n` +
+            `📧 Email: ${user.email}\n` +
+            `✅ Статус: Автоматически одобрен\n\n` +
+            `Теперь вы можете создавать объявления о продаже цветов!`;
+
+          await sendTelegramMessage(user.telegramId, welcomeMessage, { parse_mode: 'Markdown' });
+          console.log(`📤 Welcome message sent to user ${user.telegramId}`);
+        } catch (botError) {
+          console.error('Welcome message failed:', botError.message);
+        }
       }
-    }
 
-    res.json({
-      success: true,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        picture: user.picture,
-        isApproved: user.isApproved,
-        telegramId: user.telegramId
+      // Отправляем уведомление админу
+      if (botInitialized && adminChatId) {
+        try {
+          const adminMessage = `📋 *Новый пользователь зарегистрировался*\n\n` +
+            `👤 Имя: ${user.name}\n` +
+            `📧 Email: ${user.email}\n` +
+            `🆔 User ID: ${user.id}\n` +
+            (user.telegramId ? `📱 Telegram ID: ${user.telegramId}\n` : '') +
+            `✅ Статус: Автоматически одобрен\n` +
+            `⏰ Время: ${new Date().toLocaleString('ru-RU')}`;
+
+          await sendTelegramMessage(adminChatId, adminMessage, { parse_mode: 'Markdown' });
+        } catch (botError) {
+          console.error('Admin notification failed:', botError.message);
+        }
       }
-    });
+
+      res.json({
+        success: true,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          picture: user.picture,
+          isApproved: user.isApproved,
+          telegramId: user.telegramId
+        }
+      });
+
+    } catch (googleError) {
+      console.error('❌ Google token verification failed:', googleError.message);
+      res.status(401).json({ 
+        success: false, 
+        error: 'Invalid Google token',
+        details: googleError.message 
+      });
+    }
 
   } catch (error) {
-    console.error('Google auth error:', error);
-    res.status(401).json({ 
+    console.error('❌ Google auth error:', error);
+    res.status(500).json({ 
       success: false, 
       error: 'Authentication failed',
       details: error.message 
@@ -469,14 +474,12 @@ app.post('/api/auth/google', async (req, res) => {
   }
 });
 
-// Публикация объявления
 app.post('/api/publish-ad', async (req, res) => {
   try {
     const { userId, title, description, price, contactInfo } = req.body;
     
     console.log(`📝 New ad submission from ${userId}:`, { title, price });
     
-    // Проверяем существование пользователя
     const user = users.get(userId);
     if (!user || !user.isLoggedIn) {
       return res.status(401).json({ 
@@ -485,7 +488,6 @@ app.post('/api/publish-ad', async (req, res) => {
       });
     }
 
-    // Формируем сообщение для Telegram
     const telegramMessage = `🌸 *${title}* 🌸\n\n` +
                    `📝 *Описание:*\n${description}\n\n` +
                    `💰 *Цена:* ${price}\n` +
@@ -497,7 +499,6 @@ app.post('/api/publish-ad', async (req, res) => {
     let telegramMessageId = null;
     let telegramError = null;
     
-    // Отправляем в канал
     if (botInitialized && channelId) {
       try {
         console.log(`📤 Sending ad to channel ${channelId}`);
@@ -520,7 +521,6 @@ app.post('/api/publish-ad', async (req, res) => {
       console.warn('Bot or channel not configured');
     }
 
-    // Сохраняем информацию об объявлении
     const ad = {
       id: Date.now(),
       userId,
@@ -538,7 +538,6 @@ app.post('/api/publish-ad', async (req, res) => {
     user.ads.push(ad);
     users.set(userId, user);
 
-    // Отправляем уведомление пользователю
     if (botInitialized && user.telegramId) {
       try {
         let userMessage;
@@ -548,7 +547,7 @@ app.post('/api/publish-ad', async (req, res) => {
             `*Заголовок:* ${title}\n` +
             `*Цена:* ${price}\n\n` +
             `📢 *Ссылка на объявление:*\n` +
-            `https://t.me/c/${channelId.toString().slice(4)}/${telegramMessageId}`;
+            `https://t.me/c/${channelId.toString().replace('-100', '')}/${telegramMessageId}`;
         } else {
           userMessage = `⚠️ *Объявление не опубликовано*\n\n` +
             `*Заголовок:* ${title}\n` +
@@ -586,7 +585,6 @@ app.post('/api/publish-ad', async (req, res) => {
   }
 });
 
-// Получение информации о пользователе
 app.get('/api/user/:userId', (req, res) => {
   const userId = req.params.userId;
   const user = users.get(userId);
@@ -611,7 +609,6 @@ app.get('/api/user/:userId', (req, res) => {
   }
 });
 
-// Проверка статуса одобрения
 app.get('/api/user/:userId/approval-status', (req, res) => {
   const userId = req.params.userId;
   const user = users.get(userId);
@@ -621,7 +618,6 @@ app.get('/api/user/:userId/approval-status', (req, res) => {
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     error: 'Route not found',
@@ -629,7 +625,6 @@ app.use((req, res) => {
   });
 });
 
-// Error handler
 app.use((err, req, res, next) => {
   console.error('Server error:', err.stack);
   res.status(500).json({ 
@@ -652,9 +647,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`4. Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`\n=== BOT STATUS ===`);
   console.log(`Bot initialized: ${botInitialized ? '✅ Yes' : '❌ No'}`);
+  console.log(`Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not initialized'}`);
 });
 
-// Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down gracefully...');
   
