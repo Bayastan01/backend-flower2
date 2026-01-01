@@ -1,7 +1,6 @@
 {
   "name": "flower-market-backend",
   "version": "1.0.0",
-  "description": "Backend for Flower Market Telegram bot",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,10 +12,10 @@
     "axios": "^1.6.0",
     "google-auth-library": "^9.0.0",
     "node-telegram-bot-api": "^0.64.0",
-    "dotenv": "^16.3.1",
-    "multer": "^1.4.5-lts.1"
+    "multer": "^1.4.5-lts.1",
+    "dotenv": "^16.3.1"
   },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
