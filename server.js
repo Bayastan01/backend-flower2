@@ -22,24 +22,19 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Проверка переменных окружения
 console.log('=== ENVIRONMENT CHECK ===');
 console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set` : '✗ Missing');
-console.log('- GOOGLE_CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? '✓ Set' : '✗ Missing');
+console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set (${process.env.GOOGLE_CLIENT_ID.substring(0, 20)}...)` : '✗ Missing');
 console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
 console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
 console.log('- FRONTEND_URL:', process.env.FRONTEND_URL || 'Not set');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 
-// Инициализация Google OAuth
+// Инициализация Google OAuth - УПРОЩЕННАЯ ВЕРСИЯ
 let googleClient;
-try {
-  googleClient = new OAuth2Client(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    `${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}`
-  );
+if (process.env.GOOGLE_CLIENT_ID) {
+  googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
   console.log('✅ Google OAuth initialized');
-} catch (error) {
-  console.error('❌ Google OAuth init error:', error.message);
+} else {
+  console.error('❌ GOOGLE_CLIENT_ID not found');
   googleClient = null;
 }
 
@@ -159,11 +154,21 @@ function initializeTelegramBot() {
         message += `*Ваш Telegram ID:* \`${telegramId}\``;
       }
       
-      await bot.sendMessage(chatId, message, { 
-        parse_mode: 'Markdown', 
-        ...keyboard 
-      });
-      
+      try {
+        await bot.sendMessage(chatId, message, { 
+          parse_mode: 'Markdown', 
+          ...keyboard 
+        });
+      } catch (error) {
+        console.error('Error sending start message:', error.message);
+      }
+    });
+
+    // Обработка текстовых сообщений
+    bot.on('message', async (msg) => {
+      if (msg.text && !msg.text.startsWith('/')) {
+        console.log(`📩 Message from ${msg.chat.id}: ${msg.text.substring(0, 50)}...`);
+      }
     });
 
     // Успешная инициализация
@@ -262,10 +267,13 @@ app.get('/api/user/check/:telegramId', (req, res) => {
 
 // Упрощенная авторизация через Google (без redirect URI)
 app.post('/api/auth/google', async (req, res) => {
-  console.log('🔐 Google auth request');
+  console.log('🔐 Google auth request received');
   
   try {
     const { token, telegramId } = req.body;
+    
+    console.log('Token received:', token ? 'Yes' : 'No');
+    console.log('Telegram ID:', telegramId);
     
     if (!token) {
       return res.status(400).json({ 
@@ -288,7 +296,8 @@ app.post('/api/auth/google', async (req, res) => {
       });
     }
 
-    // Верификация ID токена (не нужен redirect URI)
+    // Верификация ID токена
+    console.log('Verifying Google token...');
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -542,7 +551,7 @@ app.post('/api/publish-ad', async (req, res) => {
     console.log(`📝 New ad from ${user.telegramId}:`, { title, price });
     
     // Формируем сообщение
-    const telegramMessage = `🌸 *${title}* 🌸\n\n` +
+    let telegramMessage = `🌸 *${title}* 🌸\n\n` +
                    `📝 *Описание:*\n${description}\n\n` +
                    `💰 *Цена:* ${price}\n` +
                    `📞 *Контакты:* ${contactInfo}\n\n` +
@@ -727,10 +736,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
   console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
   console.log(`\n=== IMPORTANT ===`);
-  console.log(`1. Configure Google Cloud Console:`);
-  console.log(`   - Add redirect URIs in OAuth consent screen`);
-  console.log(`   - Use: https://flowers-telegram-kyrgyzstan.up.railway.app`);
-  console.log(`2. Add GOOGLE_CLIENT_SECRET to environment variables`);
+  console.log(`1. Bot URL: https://t.me/Flowers_free_bot`);
+  console.log(`2. Make sure GOOGLE_CLIENT_ID is correct`);
 });
 
 process.on('SIGINT', () => {
