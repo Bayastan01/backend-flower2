@@ -22,15 +22,21 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Проверка переменных окружения
 console.log('=== ENVIRONMENT CHECK ===');
 console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set (${process.env.GOOGLE_CLIENT_ID})` : '✗ Missing');
+console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set` : '✗ Missing');
+console.log('- GOOGLE_CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? '✓ Set' : '✗ Missing');
 console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
 console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
+console.log('- FRONTEND_URL:', process.env.FRONTEND_URL || 'Not set');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
 
 // Инициализация Google OAuth
 let googleClient;
 try {
-  googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  googleClient = new OAuth2Client(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    `${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}`
+  );
   console.log('✅ Google OAuth initialized');
 } catch (error) {
   console.error('❌ Google OAuth init error:', error.message);
@@ -40,17 +46,16 @@ try {
 const channelId = process.env.CHANNEL_ID;
 const adminChatId = process.env.ADMIN_CHAT_ID;
 
-// Хранение данных (в продакшене нужно использовать Redis или БД)
-const users = new Map(); // telegramId -> user
-const sessions = new Map(); // sessionToken -> user
-const telegramData = new Map(); // tempId -> telegram data
+// Хранение данных
+const users = new Map();
+const sessions = new Map();
+const telegramData = new Map();
 
 // Генерация сессионного токена
 function generateSessionToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-// Генерация временного ID
 function generateTempId() {
   return 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
@@ -82,7 +87,6 @@ function initializeTelegramBot() {
       const chatId = msg.chat.id;
       const telegramId = msg.from.id.toString();
       const firstName = msg.from.first_name || 'Пользователь';
-      const username = msg.from.username ? `@${msg.from.username}` : 'без username';
       
       console.log(`👤 User /start: ${firstName} (ID: ${telegramId})`);
       
@@ -112,16 +116,16 @@ function initializeTelegramBot() {
         console.log(`✅ New Telegram user created: ${firstName} (${telegramId})`);
       }
       
-      // Генерируем временный ID для передачи во фронтенд
+      // Генерируем временный ID
       const tempId = generateTempId();
       telegramData.set(tempId, {
         telegramId: telegramId,
         firstName: firstName,
-        username: username,
+        username: msg.from.username,
         timestamp: Date.now()
       });
       
-      // Чистим старые временные данные через 5 минут
+      // Чистим через 5 минут
       setTimeout(() => {
         telegramData.delete(tempId);
       }, 5 * 60 * 1000);
@@ -162,107 +166,6 @@ function initializeTelegramBot() {
       
     });
 
-    // Команда /me - профиль
-    bot.onText(/\/me/, async (msg) => {
-      const chatId = msg.chat.id;
-      const telegramId = msg.from.id.toString();
-      const user = users.get(telegramId);
-      
-      if (user && user.googleInfo) {
-        let message = `*📋 Ваш профиль*\n\n`;
-        message += `👤 *Имя:* ${user.googleInfo.name}\n`;
-        message += `📧 *Email:* ${user.googleInfo.email}\n`;
-        message += `📱 *Telegram ID:* \`${user.telegramId}\`\n`;
-        
-        if (user.telegramInfo.username) {
-          message += `👤 *Telegram:* @${user.telegramInfo.username}\n`;
-        }
-        
-        message += `✅ *Статус:* ${user.isApproved ? 'Одобрен ✅' : 'Ожидает ⏳'}\n`;
-        message += `📊 *Объявлений:* ${user.ads.length}\n`;
-        message += `📅 *Регистрация:* ${user.createdAt.toLocaleDateString('ru-RU')}\n\n`;
-        
-        if (user.ads.length > 0) {
-          message += `*Последние объявления:*\n`;
-          const recentAds = user.ads.slice(-3).reverse();
-          recentAds.forEach((ad, index) => {
-            const status = ad.telegramMessageId ? '✅ Опубликовано' : '⚠️ Черновик';
-            message += `${index + 1}. "${ad.title}" - ${ad.price} (${status})\n`;
-          });
-        }
-        
-        const keyboard = {
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '🌺 Создать объявление',
-                web_app: { 
-                  url: `${process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app'}?telegram_id=${telegramId}` 
-                }
-              },
-              {
-                text: '📋 Мои объявления',
-                callback_data: 'my_ads'
-              }
-            ]]
-          }
-        };
-        
-        await bot.sendMessage(chatId, message, { 
-          parse_mode: 'Markdown',
-          ...keyboard 
-        });
-        
-      } else {
-        await bot.sendMessage(chatId, 
-          `Вы еще не авторизовались через Google.\n\n` +
-          `Используйте команду /start и войдите через Google в веб-приложении.`,
-          { parse_mode: 'Markdown' }
-        );
-      }
-    });
-
-    // Обработчик callback кнопок
-    bot.on('callback_query', async (callbackQuery) => {
-      const chatId = callbackQuery.message.chat.id;
-      const telegramId = callbackQuery.from.id.toString();
-      const data = callbackQuery.data;
-      
-      if (data === 'my_ads') {
-        const user = users.get(telegramId);
-        if (user && user.ads.length > 0) {
-          let message = `*📋 Ваши объявления (${user.ads.length})*\n\n`;
-          
-          user.ads.forEach((ad, index) => {
-            const date = new Date(ad.publishedAt).toLocaleDateString('ru-RU');
-            const status = ad.telegramMessageId ? '✅' : '⚠️';
-            message += `${index + 1}. ${status} *${ad.title}*\n`;
-            message += `   💰 ${ad.price}\n`;
-            message += `   📅 ${date}\n`;
-            
-            if (ad.telegramMessageId) {
-              const chatId = channelId ? channelId.toString().replace('-100', '') : '';
-              message += `   🔗 [Посмотреть](https://t.me/c/${chatId}/${ad.telegramMessageId})\n`;
-            }
-            message += `\n`;
-          });
-          
-          await bot.sendMessage(chatId, message, { 
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true 
-          });
-        } else {
-          await bot.sendMessage(chatId, 
-            `У вас пока нет объявлений.\n\n` +
-            `Создайте первое объявление через веб-приложение!`,
-            { parse_mode: 'Markdown' }
-          );
-        }
-      }
-      
-      await bot.answerCallbackQuery(callbackQuery.id);
-    });
-
     // Успешная инициализация
     bot.getMe().then(botInfo => {
       console.log(`✅ Telegram Bot started: @${botInfo.username}`);
@@ -270,7 +173,6 @@ function initializeTelegramBot() {
       
       bot.setMyCommands([
         { command: 'start', description: 'Запустить бота' },
-        { command: 'me', description: 'Мой профиль' },
         { command: 'help', description: 'Помощь' }
       ]);
       
@@ -296,6 +198,8 @@ app.get('/health', (req, res) => {
     sessionsCount: sessions.size,
     botInitialized: botInitialized,
     googleOAuthInitialized: !!googleClient,
+    googleClientId: process.env.GOOGLE_CLIENT_ID ? 'Set' : 'Missing',
+    frontendUrl: process.env.FRONTEND_URL || 'Not set',
     environment: process.env.NODE_ENV || 'development'
   });
 });
@@ -307,7 +211,6 @@ app.get('/api/telegram-data/:tempId', (req, res) => {
     const data = telegramData.get(tempId);
     
     if (data) {
-      // Удаляем временные данные после использования
       telegramData.delete(tempId);
       
       res.json({
@@ -327,7 +230,7 @@ app.get('/api/telegram-data/:tempId', (req, res) => {
   }
 });
 
-// Проверка существования пользователя
+// Проверка пользователя
 app.get('/api/user/check/:telegramId', (req, res) => {
   try {
     const telegramId = req.params.telegramId;
@@ -357,7 +260,7 @@ app.get('/api/user/check/:telegramId', (req, res) => {
   }
 });
 
-// Авторизация через Google
+// Упрощенная авторизация через Google (без redirect URI)
 app.post('/api/auth/google', async (req, res) => {
   console.log('🔐 Google auth request');
   
@@ -385,7 +288,7 @@ app.post('/api/auth/google', async (req, res) => {
       });
     }
 
-    // Верификация Google токена
+    // Верификация ID токена (не нужен redirect URI)
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -394,11 +297,10 @@ app.post('/api/auth/google', async (req, res) => {
     const payload = ticket.getPayload();
     console.log(`✅ Google auth successful for: ${payload.email}`);
     
-    // Ищем существующего пользователя
+    // Ищем или создаем пользователя
     let user = users.get(telegramId);
     
     if (!user) {
-      // Создаем нового пользователя
       user = {
         id: telegramId,
         telegramId: telegramId,
@@ -433,7 +335,7 @@ app.post('/api/auth/google', async (req, res) => {
     user.isLoggedIn = true;
     user.lastActivity = new Date();
     
-    // Генерируем новую сессию
+    // Генерируем сессию
     const sessionToken = generateSessionToken();
     user.sessionToken = sessionToken;
     sessions.set(sessionToken, user);
@@ -465,7 +367,7 @@ app.post('/api/auth/google', async (req, res) => {
       }
     }
     
-    // Отправляем приветственное сообщение пользователю
+    // Отправляем приветственное сообщение
     if (botInitialized && user.telegramId) {
       try {
         const frontendUrl = process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app';
@@ -473,10 +375,6 @@ app.post('/api/auth/google', async (req, res) => {
         
         const welcomeMessage = `🎉 *Добро пожаловать, ${user.googleInfo.name}!*\n\n` +
           `✅ Вы успешно авторизовались в Flower Market.\n\n` +
-          `*Ваши данные:*\n` +
-          `👤 Имя: ${user.googleInfo.name}\n` +
-          `📧 Email: ${user.googleInfo.email}\n` +
-          `📱 Telegram ID: ${user.telegramId}\n\n` +
           `Теперь вы можете создавать объявления о продаже цветов!`;
         
         const keyboard = {
@@ -531,7 +429,6 @@ app.get('/api/session/:sessionToken', (req, res) => {
     const user = sessions.get(sessionToken);
     
     if (user && user.isLoggedIn) {
-      // Обновляем время последней активности
       user.lastActivity = new Date();
       sessions.set(sessionToken, user);
       users.set(user.telegramId, user);
@@ -574,7 +471,6 @@ app.post('/api/draft/save', async (req, res) => {
       return res.status(401).json({ success: false, error: 'User not authenticated' });
     }
     
-    // Сохраняем черновик
     user.draft = {
       ...draftData,
       savedAt: new Date(),
@@ -645,14 +541,13 @@ app.post('/api/publish-ad', async (req, res) => {
     
     console.log(`📝 New ad from ${user.telegramId}:`, { title, price });
     
-    // Формируем сообщение для канала
+    // Формируем сообщение
     const telegramMessage = `🌸 *${title}* 🌸\n\n` +
                    `📝 *Описание:*\n${description}\n\n` +
                    `💰 *Цена:* ${price}\n` +
                    `📞 *Контакты:* ${contactInfo}\n\n` +
                    `👤 *Продавец:* ${user.googleInfo?.name || user.telegramInfo.firstName}\n`;
     
-    // Добавляем контакты пользователя если есть
     if (user.telegramInfo.username) {
       telegramMessage += `💬 *Telegram:* @${user.telegramInfo.username}\n`;
     }
@@ -696,18 +591,17 @@ app.post('/api/publish-ad', async (req, res) => {
       error: error
     };
     
-    // Добавляем в историю пользователя
+    // Добавляем в историю
     user.ads = user.ads || [];
     user.ads.push(ad);
     
-    // Удаляем черновик после публикации
     delete user.draft;
     
     user.lastActivity = new Date();
     users.set(user.telegramId, user);
     sessions.set(sessionToken, user);
     
-    // Отправляем уведомление пользователю
+    // Уведомляем пользователя
     if (botInitialized && user.telegramId) {
       try {
         let userMessage;
@@ -724,8 +618,7 @@ app.post('/api/publish-ad', async (req, res) => {
           userMessage = `⚠️ *Объявление не опубликовано*\n\n` +
             `*Заголовок:* ${title}\n` +
             `*Цена:* ${price}\n\n` +
-            `*Причина:* ${error || 'Ошибка при отправке'}\n` +
-            `*Не волнуйтесь, данные сохранены и будут опубликованы позже!*`;
+            `*Причина:* ${error || 'Ошибка при отправке'}`;
         }
         
         const frontendUrl = process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app';
@@ -738,10 +631,6 @@ app.post('/api/publish-ad', async (req, res) => {
               {
                 text: '🌺 Создать еще',
                 web_app: { url: webAppUrl }
-              },
-              {
-                text: '📢 Посмотреть канал',
-                url: 'https://t.me/flowers_market_kg'
               }
             ]]
           }
@@ -769,7 +658,7 @@ app.post('/api/publish-ad', async (req, res) => {
   }
 });
 
-// Выход из системы
+// Выход
 app.post('/api/logout', async (req, res) => {
   try {
     const { sessionToken } = req.body;
@@ -796,10 +685,10 @@ app.post('/api/logout', async (req, res) => {
   }
 });
 
-// Очистка старых сессий (каждые 24 часа)
+// Очистка сессий
 setInterval(() => {
   const now = new Date();
-  const SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000; // 7 дней
+  const SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000;
   let deleted = 0;
   
   sessions.forEach((user, sessionToken) => {
@@ -837,12 +726,11 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 CORS enabled for: https://flowers-telegram-kyrgyzstan.up.railway.app`);
   console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
   console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
-  console.log(`\n=== ИНСТРУКЦИЯ ===`);
-  console.log(`1. Пользователь пишет /start боту`);
-  console.log(`2. Бот отправляет кнопку с WebApp ссылкой`);
-  console.log(`3. WebApp открывается с кнопкой "Войти через Google"`);
-  console.log(`4. Пользователь нажимает кнопку и авторизуется`);
-  console.log(`5. После авторизации открывается форма объявления`);
+  console.log(`\n=== IMPORTANT ===`);
+  console.log(`1. Configure Google Cloud Console:`);
+  console.log(`   - Add redirect URIs in OAuth consent screen`);
+  console.log(`   - Use: https://flowers-telegram-kyrgyzstan.up.railway.app`);
+  console.log(`2. Add GOOGLE_CLIENT_SECRET to environment variables`);
 });
 
 process.on('SIGINT', () => {
