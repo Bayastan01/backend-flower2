@@ -1,193 +1,169 @@
 const express = require('express');
 const cors = require('cors');
-const { OAuth2Client } = require('google-auth-library');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
-require('dotenv').config();
 
 const app = express();
 
 // Middleware
 app.use(cors({
-  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app', 'https://flowers-telegram-kyrgyzstan.up.railway.app/'],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+  origin: '*',
+  credentials: true
 }));
 
-app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Проверка переменных окружения
-console.log('=== ENVIRONMENT CHECK ===');
-console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_SECRET:', process.env.GOOGLE_CLIENT_SECRET ? '✓ Set' : '✗ Missing');
-console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
-console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
-console.log('- FRONTEND_URL:', process.env.FRONTEND_URL || 'Not set');
-console.log('- BACKEND_URL:', process.env.BACKEND_URL || 'Not set');
-console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
+// Конфигурация (можно через переменные окружения или прямо в коде)
+const config = {
+  BOT_TOKEN: process.env.BOT_TOKEN || '8316210179:AAG7Tfvf1ou8_8g1rQjD8UQt6sKXKXG0hPQ',
+  CHANNEL_ID: process.env.CHANNEL_ID || '@flowers_market_kg',
+  FRONTEND_URL: process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app',
+  BACKEND_URL: process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'
+};
 
-// Инициализация Google OAuth
-let googleClient = null;
-let bot = null;
-let botInitialized = false;
+console.log('=== FLOWER MARKET BACKEND ===');
+console.log('Config:', config);
 
-// Хранение данных
+// Хранение данных в памяти
 const users = new Map();
 const sessions = new Map();
 const telegramData = new Map();
-const pendingAuth = new Map();
 
 // Генерация токенов
-function generateSessionToken() {
-  return crypto.randomBytes(32).toString('hex');
-}
+function generateSessionToken() { return crypto.randomBytes(32).toString('hex'); }
+function generateTempId() { return 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9); }
 
-function generateTempId() {
-  return 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
+// Инициализация Telegram бота
+let bot = null;
+let botInitialized = false;
 
-function generateStateToken() {
-  return 'state_' + Date.now() + '_' + crypto.randomBytes(16).toString('hex');
-}
-
-// Инициализация
-function initializeServices() {
-  // Google OAuth
-  if (process.env.GOOGLE_CLIENT_ID) {
-    try {
-      googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-      console.log('✅ Google OAuth initialized (simple mode)');
-    } catch (error) {
-      console.error('❌ Google OAuth init error:', error.message);
-    }
+function initializeTelegramBot() {
+  if (!config.BOT_TOKEN || config.BOT_TOKEN === 'ВАШ_ТОКЕН_БОТА') {
+    console.warn('⚠️ BOT_TOKEN not set, Telegram bot disabled');
+    return;
   }
-  
-  // Telegram Bot
-  if (process.env.BOT_TOKEN) {
-    try {
-      console.log('🤖 Initializing Telegram bot...');
-      bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+
+  try {
+    console.log('🤖 Initializing Telegram bot...');
+    bot = new TelegramBot(config.BOT_TOKEN, { polling: true });
+    
+    // Команда /start
+    bot.onText(/\/start/, async (msg) => {
+      const chatId = msg.chat.id;
+      const telegramId = msg.from.id.toString();
+      const firstName = msg.from.first_name || 'Пользователь';
       
-      bot.onText(/\/start/, async (msg) => {
-        const chatId = msg.chat.id;
-        const telegramId = msg.from.id.toString();
-        const firstName = msg.from.first_name || 'Пользователь';
-        
-        console.log(`👤 User /start: ${firstName} (ID: ${telegramId})`);
-        
-        let user = users.get(telegramId);
-        if (!user) {
-          user = {
-            id: telegramId,
-            telegramId: telegramId,
-            telegramInfo: {
-              firstName: msg.from.first_name,
-              username: msg.from.username
-            },
-            googleInfo: null,
-            isLoggedIn: false,
-            createdAt: new Date(),
-            isApproved: true
-          };
-          users.set(telegramId, user);
-        }
-        
-        const tempId = generateTempId();
-        telegramData.set(tempId, {
+      console.log(`👤 User /start: ${firstName} (ID: ${telegramId})`);
+      
+      // Создаем или получаем пользователя
+      let user = users.get(telegramId);
+      if (!user) {
+        user = {
+          id: telegramId,
           telegramId: telegramId,
-          firstName: firstName,
-          username: msg.from.username,
-          timestamp: Date.now()
-        });
-        
-        setTimeout(() => telegramData.delete(tempId), 5 * 60 * 1000);
-        
-        const frontendUrl = process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app';
-        const webAppUrl = `${frontendUrl}?telegram_id=${telegramId}&temp_id=${tempId}`;
-        
-        const keyboard = {
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '🌺 Создать объявление',
-                web_app: { url: webAppUrl }
-              }
-            ]]
-          }
+          telegramInfo: {
+            firstName: msg.from.first_name,
+            username: msg.from.username
+          },
+          isLoggedIn: true, // Упрощенно - сразу авторизованы
+          createdAt: new Date(),
+          ads: []
         };
-        
-        let message = `Добро пожаловать в Flower Market, ${firstName}! 🌸\n\n`;
-        
-        if (user.googleInfo) {
-          message += `✅ Вы уже авторизованы как ${user.googleInfo.name}\n`;
-          message += `📧 Email: ${user.googleInfo.email}\n\n`;
-          message += `Нажмите кнопку ниже, чтобы создать новое объявление.`;
-        } else {
-          message += `Для создания объявлений нужно:\n`;
-          message += `1. Нажать кнопку ниже\n`;
-          message += `2. Войти через Google\n`;
-          message += `3. Заполнить форму объявления\n\n`;
-          message += `*Ваш Telegram ID:* \`${telegramId}\``;
+        users.set(telegramId, user);
+      }
+      
+      // Генерируем временный ID для веб-приложения
+      const tempId = generateTempId();
+      telegramData.set(tempId, {
+        telegramId: telegramId,
+        firstName: firstName,
+        username: msg.from.username,
+        timestamp: Date.now()
+      });
+      
+      // Автоматически создаем сессию
+      const sessionToken = generateSessionToken();
+      user.sessionToken = sessionToken;
+      sessions.set(sessionToken, user);
+      
+      // URL для веб-приложения
+      const webAppUrl = `${config.FRONTEND_URL}?session=${sessionToken}`;
+      
+      // Отправляем сообщение с кнопкой
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [[
+            {
+              text: '🌺 Создать объявление',
+              web_app: { url: webAppUrl }
+            }
+          ]]
         }
-        
+      };
+      
+      const message = `Добро пожаловать в Flower Market, ${firstName}! 🌸\n\n` +
+        `✅ Вы авторизованы через Telegram\n` +
+        `Нажмите кнопку ниже, чтобы создать объявление.`;
+      
+      try {
         await bot.sendMessage(chatId, message, { 
           parse_mode: 'Markdown', 
           ...keyboard 
         });
-      });
+        console.log(`✅ Start message sent to ${telegramId}`);
+      } catch (error) {
+        console.error('Error sending start message:', error.message);
+      }
+    });
+    
+    // Проверяем работу бота
+    bot.getMe().then(botInfo => {
+      console.log(`✅ Telegram Bot started: @${botInfo.username}`);
+      botInitialized = true;
       
-      bot.getMe().then(botInfo => {
-        console.log(`✅ Telegram Bot started: @${botInfo.username}`);
-        botInitialized = true;
-        bot.setMyCommands([
-          { command: 'start', description: 'Запустить бота' },
-          { command: 'help', description: 'Помощь' }
-        ]);
-      }).catch(error => {
-        console.error('❌ Failed to get bot info:', error.message);
-      });
+      // Устанавливаем команды
+      bot.setMyCommands([
+        { command: 'start', description: 'Запустить бота и создать объявление' },
+        { command: 'help', description: 'Помощь по использованию бота' }
+      ]);
       
-    } catch (error) {
-      console.error('❌ Failed to initialize Telegram bot:', error.message);
-    }
-  } else {
-    console.warn('⚠️ BOT_TOKEN not found, Telegram bot disabled');
+    }).catch(error => {
+      console.error('❌ Failed to get bot info:', error.message);
+    });
+    
+  } catch (error) {
+    console.error('❌ Failed to initialize Telegram bot:', error.message);
   }
 }
 
-// Запуск инициализации
-initializeServices();
+// Инициализируем бота
+initializeTelegramBot();
 
-// ==================== ROUTES ====================
+// ==================== API ROUTES ====================
 
-// КОРНЕВОЙ МАРШРУТ
+// КОРНЕВОЙ МАРШРУТ - ОБЯЗАТЕЛЬНО ПЕРВЫЙ!
 app.get('/', (req, res) => {
   res.json({
     message: '🌺 Flower Market Backend API',
-    version: '1.0.0',
+    version: '2.0.0',
     status: 'online',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    services: {
-      telegramBot: botInitialized ? '✅ Active' : '❌ Inactive',
-      googleOAuth: googleClient ? '✅ Initialized' : '❌ Not configured'
-    },
     endpoints: {
       root: 'GET /',
       health: 'GET /health',
       telegramData: 'GET /api/telegram-data/:tempId',
       userCheck: 'GET /api/user/check/:telegramId',
-      googleAuthUrl: 'POST /api/auth/google/url',
-      googleCallback: 'GET /api/auth/google/callback',
       sessionCheck: 'GET /api/session/:sessionToken',
       draftSave: 'POST /api/draft/save',
       draftGet: 'GET /api/draft/:sessionToken',
       publishAd: 'POST /api/publish-ad',
       logout: 'POST /api/logout'
+    },
+    stats: {
+      users: users.size,
+      sessions: sessions.size,
+      botInitialized: botInitialized
     }
   });
 });
@@ -200,30 +176,51 @@ app.get('/health', (req, res) => {
     usersCount: users.size,
     sessionsCount: sessions.size,
     botInitialized: botInitialized,
-    googleOAuthInitialized: !!googleClient,
-    environment: process.env.NODE_ENV || 'development',
-    requiredEnvVars: {
-      BOT_TOKEN: process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing',
-      GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID ? '✓ Set' : '✗ Missing',
-      GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET ? '✓ Set' : '✗ Missing',
-      CHANNEL_ID: process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing'
+    config: {
+      botToken: config.BOT_TOKEN ? 'Set' : 'Missing',
+      channelId: config.CHANNEL_ID ? 'Set' : 'Missing'
     }
   });
 });
 
-// Получение информации о Telegram пользователе
+// Получение данных Telegram пользователя
 app.get('/api/telegram-data/:tempId', (req, res) => {
   try {
     const tempId = req.params.tempId;
     const data = telegramData.get(tempId);
     
     if (data) {
+      // Удаляем временные данные после использования
       telegramData.delete(tempId);
+      
+      // Создаем пользователя если его нет
+      let user = users.get(data.telegramId);
+      if (!user) {
+        user = {
+          id: data.telegramId,
+          telegramId: data.telegramId,
+          telegramInfo: {
+            firstName: data.firstName,
+            username: data.username
+          },
+          isLoggedIn: true,
+          createdAt: new Date(),
+          ads: []
+        };
+        users.set(data.telegramId, user);
+      }
+      
+      // Создаем сессию
+      const sessionToken = generateSessionToken();
+      user.sessionToken = sessionToken;
+      sessions.set(sessionToken, user);
+      
       res.json({
         success: true,
         telegramId: data.telegramId,
         firstName: data.firstName,
-        username: data.username
+        username: data.username,
+        sessionToken: sessionToken
       });
     } else {
       res.json({ 
@@ -232,7 +229,8 @@ app.get('/api/telegram-data/:tempId', (req, res) => {
       });
     }
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Error getting telegram data:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
@@ -246,13 +244,12 @@ app.get('/api/user/check/:telegramId', (req, res) => {
       res.json({
         success: true,
         exists: true,
-        isLoggedIn: user.isLoggedIn,
+        isLoggedIn: true, // Всегда авторизованы через Telegram
         user: {
           id: user.id,
-          name: user.googleInfo?.name || user.telegramInfo.firstName,
-          email: user.googleInfo?.email,
-          picture: user.googleInfo?.picture,
-          isApproved: user.isApproved
+          telegramId: user.telegramId,
+          name: user.telegramInfo.firstName,
+          telegramInfo: user.telegramInfo
         }
       });
     } else {
@@ -262,129 +259,8 @@ app.get('/api/user/check/:telegramId', (req, res) => {
       });
     }
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Упрощенная авторизация через Google
-app.post('/api/auth/google', async (req, res) => {
-  console.log('🔐 Google auth request');
-  
-  try {
-    const { token, telegramId } = req.body;
-    
-    if (!token || !telegramId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Token and Telegram ID are required' 
-      });
-    }
-
-    if (!googleClient) {
-      return res.status(500).json({ 
-        success: false, 
-        error: 'Google OAuth not configured' 
-      });
-    }
-
-    // Верификация токена
-    const ticket = await googleClient.verifyIdToken({
-      idToken: token,
-      audience: process.env.GOOGLE_CLIENT_ID
-    });
-
-    const payload = ticket.getPayload();
-    console.log(`✅ Google auth successful for: ${payload.email}`);
-    
-    // Ищем или создаем пользователя
-    let user = users.get(telegramId);
-    if (!user) {
-      user = {
-        id: telegramId,
-        telegramId: telegramId,
-        telegramInfo: {
-          firstName: 'Пользователь',
-          languageCode: 'ru'
-        },
-        googleInfo: null,
-        isLoggedIn: false,
-        createdAt: new Date(),
-        isApproved: true,
-        ads: [],
-        sessionToken: null,
-        lastActivity: new Date()
-      };
-    }
-    
-    // Обновляем информацию
-    user.googleInfo = {
-      googleId: payload.sub,
-      name: payload.name,
-      email: payload.email,
-      picture: payload.picture
-    };
-    
-    user.isLoggedIn = true;
-    user.lastActivity = new Date();
-    
-    // Генерируем сессию
-    const sessionToken = generateSessionToken();
-    user.sessionToken = sessionToken;
-    sessions.set(sessionToken, user);
-    users.set(telegramId, user);
-    
-    console.log(`✅ User authenticated: ${user.googleInfo.name}`);
-    
-    // Отправляем приветственное сообщение в Telegram
-    if (botInitialized && user.telegramId) {
-      try {
-        const frontendUrl = process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app';
-        const webAppUrl = `${frontendUrl}?session=${sessionToken}`;
-        
-        const welcomeMessage = `🎉 *Добро пожаловать, ${user.googleInfo.name}!*\n\n` +
-          `✅ Вы успешно авторизовались в Flower Market.\n\n` +
-          `Теперь вы можете создавать объявления о продаже цветов!`;
-        
-        const keyboard = {
-          reply_markup: {
-            inline_keyboard: [[
-              {
-                text: '🌺 Создать объявление',
-                web_app: { url: webAppUrl }
-              }
-            ]]
-          }
-        };
-        
-        await bot.sendMessage(user.telegramId, welcomeMessage, { 
-          parse_mode: 'Markdown',
-          ...keyboard 
-        });
-      } catch (botError) {
-        console.error('Welcome message failed:', botError.message);
-      }
-    }
-    
-    res.json({
-      success: true,
-      user: {
-        id: user.id,
-        telegramId: user.telegramId,
-        name: user.googleInfo.name,
-        email: user.googleInfo.email,
-        picture: user.googleInfo.picture,
-        isApproved: user.isApproved
-      },
-      sessionToken: sessionToken
-    });
-
-  } catch (error) {
-    console.error('❌ Google auth error:', error.message);
-    res.status(401).json({ 
-      success: false, 
-      error: 'Authentication failed',
-      details: error.message 
-    });
+    console.error('Error checking user:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
@@ -394,7 +270,8 @@ app.get('/api/session/:sessionToken', (req, res) => {
     const sessionToken = req.params.sessionToken;
     const user = sessions.get(sessionToken);
     
-    if (user && user.isLoggedIn) {
+    if (user) {
+      // Обновляем время последней активности
       user.lastActivity = new Date();
       sessions.set(sessionToken, user);
       users.set(user.telegramId, user);
@@ -404,10 +281,9 @@ app.get('/api/session/:sessionToken', (req, res) => {
         user: {
           id: user.id,
           telegramId: user.telegramId,
-          name: user.googleInfo?.name || user.telegramInfo.firstName,
-          email: user.googleInfo?.email,
-          picture: user.googleInfo?.picture,
-          isApproved: user.isApproved
+          name: user.telegramInfo.firstName,
+          telegramInfo: user.telegramInfo,
+          isLoggedIn: true
         },
         sessionToken: sessionToken
       });
@@ -418,7 +294,8 @@ app.get('/api/session/:sessionToken', (req, res) => {
       });
     }
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    console.error('Error checking session:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
@@ -432,29 +309,32 @@ app.post('/api/draft/save', async (req, res) => {
     }
     
     const user = sessions.get(sessionToken);
-    if (!user || !user.isLoggedIn) {
+    if (!user) {
       return res.status(401).json({ success: false, error: 'User not authenticated' });
     }
     
+    // Сохраняем черновик
     user.draft = {
       ...draftData,
-      savedAt: new Date(),
-      updatedAt: new Date()
+      savedAt: new Date()
     };
     
+    // Обновляем активность
     user.lastActivity = new Date();
     users.set(user.telegramId, user);
     sessions.set(sessionToken, user);
     
+    console.log(`💾 Draft saved for user ${user.telegramId}`);
+    
     res.json({
       success: true,
-      message: 'Draft saved successfully',
+      message: 'Черновик сохранен',
       savedAt: user.draft.savedAt
     });
     
   } catch (error) {
     console.error('Error saving draft:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Ошибка сохранения' });
   }
 });
 
@@ -464,7 +344,7 @@ app.get('/api/draft/:sessionToken', async (req, res) => {
     const sessionToken = req.params.sessionToken;
     const user = sessions.get(sessionToken);
     
-    if (!user || !user.isLoggedIn) {
+    if (!user) {
       return res.status(401).json({ success: false, error: 'User not authenticated' });
     }
     
@@ -484,11 +364,11 @@ app.get('/api/draft/:sessionToken', async (req, res) => {
     
   } catch (error) {
     console.error('Error getting draft:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: 'Ошибка загрузки' });
   }
 });
 
-// Публикация объявления
+// Публикация объявления - ГЛАВНАЯ ФУНКЦИЯ!
 app.post('/api/publish-ad', async (req, res) => {
   try {
     const { sessionToken, title, description, price, contactInfo, photos } = req.body;
@@ -498,18 +378,18 @@ app.post('/api/publish-ad', async (req, res) => {
     }
     
     const user = sessions.get(sessionToken);
-    if (!user || !user.isLoggedIn) {
+    if (!user) {
       return res.status(401).json({ success: false, error: 'User not authenticated' });
     }
     
-    console.log(`📝 New ad from ${user.telegramId}:`, { title, price });
+    console.log(`📝 Новое объявление от ${user.telegramId}:`, { title, price });
     
-    // Формируем сообщение
+    // Формируем сообщение для Telegram
     let telegramMessage = `🌸 *${title}* 🌸\n\n` +
                    `📝 *Описание:*\n${description}\n\n` +
                    `💰 *Цена:* ${price}\n` +
                    `📞 *Контакты:* ${contactInfo}\n\n` +
-                   `👤 *Продавец:* ${user.googleInfo?.name || user.telegramInfo.firstName}\n`;
+                   `👤 *Продавец:* ${user.telegramInfo.firstName}\n`;
     
     if (user.telegramInfo.username) {
       telegramMessage += `💬 *Telegram:* @${user.telegramInfo.username}\n`;
@@ -521,26 +401,26 @@ app.post('/api/publish-ad', async (req, res) => {
     let telegramMessageId = null;
     let error = null;
     
-    // Отправляем в канал
-    if (botInitialized && process.env.CHANNEL_ID) {
+    // Пытаемся отправить в канал если бот активен
+    if (botInitialized && config.CHANNEL_ID) {
       try {
-        const sentMessage = await bot.sendMessage(process.env.CHANNEL_ID, telegramMessage, {
+        const sentMessage = await bot.sendMessage(config.CHANNEL_ID, telegramMessage, {
           parse_mode: 'Markdown'
         });
         
         if (sentMessage) {
           telegramMessageId = sentMessage.message_id;
-          console.log(`✅ Ad published to channel, message ID: ${telegramMessageId}`);
+          console.log(`✅ Объявление опубликовано в канале, ID сообщения: ${telegramMessageId}`);
         }
       } catch (sendError) {
         error = sendError.message;
-        console.error('Telegram send error:', sendError.message);
+        console.error('Ошибка отправки в Telegram:', sendError.message);
       }
     } else {
-      error = 'Bot or channel not configured';
+      error = 'Бот или канал не настроены';
     }
     
-    // Создаем объявление
+    // Создаем запись об объявлении
     const ad = {
       id: Date.now(),
       title,
@@ -554,29 +434,28 @@ app.post('/api/publish-ad', async (req, res) => {
       error: error
     };
     
-    // Добавляем в историю
+    // Добавляем в историю пользователя
     user.ads = user.ads || [];
     user.ads.push(ad);
     
+    // Удаляем черновик
     delete user.draft;
     
+    // Обновляем активность
     user.lastActivity = new Date();
     users.set(user.telegramId, user);
     sessions.set(sessionToken, user);
     
-    // Уведомляем пользователя
+    // Отправляем уведомление пользователю
     if (botInitialized && user.telegramId) {
       try {
         let userMessage;
         
         if (telegramMessageId) {
-          const chatId = process.env.CHANNEL_ID ? process.env.CHANNEL_ID.toString().replace('-100', '') : '';
-          const messageLink = `https://t.me/c/${chatId}/${telegramMessageId}`;
           userMessage = `✅ *Ваше объявление опубликовано!*\n\n` +
             `*Заголовок:* ${title}\n` +
             `*Цена:* ${price}\n\n` +
-            `📢 *Ссылка на объявление:*\n` +
-            `${messageLink}`;
+            `📢 *Ссылка на объявление:* https://t.me/${config.CHANNEL_ID.replace('@', '')}/${telegramMessageId}`;
         } else {
           userMessage = `⚠️ *Объявление не опубликовано*\n\n` +
             `*Заголовок:* ${title}\n` +
@@ -584,8 +463,7 @@ app.post('/api/publish-ad', async (req, res) => {
             `*Причина:* ${error || 'Ошибка при отправке'}`;
         }
         
-        const frontendUrl = process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app';
-        const webAppUrl = `${frontendUrl}?session=${sessionToken}`;
+        const webAppUrl = `${config.FRONTEND_URL}?session=${sessionToken}`;
         
         await bot.sendMessage(user.telegramId, userMessage, { 
           parse_mode: 'Markdown',
@@ -599,7 +477,7 @@ app.post('/api/publish-ad', async (req, res) => {
           }
         });
       } catch (notifyError) {
-        console.error('Could not notify user:', notifyError.message);
+        console.error('Не удалось уведомить пользователя:', notifyError.message);
       }
     }
     
@@ -615,7 +493,7 @@ app.post('/api/publish-ad', async (req, res) => {
     console.error('Error publishing ad:', error);
     res.status(500).json({ 
       success: false, 
-      error: 'Failed to publish ad',
+      error: 'Ошибка публикации',
       details: error.message 
     });
   }
@@ -627,12 +505,6 @@ app.post('/api/logout', async (req, res) => {
     const { sessionToken } = req.body;
     
     if (sessionToken && sessions.has(sessionToken)) {
-      const user = sessions.get(sessionToken);
-      if (user) {
-        user.isLoggedIn = false;
-        user.sessionToken = null;
-        users.set(user.telegramId, user);
-      }
       sessions.delete(sessionToken);
       console.log(`👋 User logged out, session: ${sessionToken.substring(0, 10)}...`);
     }
@@ -648,19 +520,35 @@ app.post('/api/logout', async (req, res) => {
   }
 });
 
+// Очистка старых сессий (раз в день)
+setInterval(() => {
+  const now = new Date();
+  const SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000; // 7 дней
+  
+  let deleted = 0;
+  sessions.forEach((user, sessionToken) => {
+    if (user.lastActivity && (now - user.lastActivity > SESSION_TIMEOUT)) {
+      sessions.delete(sessionToken);
+      deleted++;
+    }
+  });
+  
+  if (deleted > 0) {
+    console.log(`🧹 Очищено ${deleted} старых сессий`);
+  }
+}, 24 * 60 * 60 * 1000); // Каждый день
+
 // 404 handler
 app.use((req, res) => {
   console.log(`404 Not Found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
     error: 'Route not found',
     requestedUrl: req.originalUrl,
-    method: req.method,
     availableEndpoints: [
       'GET /',
       'GET /health',
       'GET /api/telegram-data/:tempId',
       'GET /api/user/check/:telegramId',
-      'POST /api/auth/google',
       'GET /api/session/:sessionToken',
       'POST /api/draft/save',
       'GET /api/draft/:sessionToken',
@@ -682,13 +570,22 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 CORS enabled for: https://flowers-telegram-kyrgyzstan.up.railway.app`);
+  console.log(`🌍 CORS enabled for all origins`);
   console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
-  console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
-  console.log(`\n=== IMPORTANT ===`);
-  console.log(`1. Add environment variables in Railway dashboard:`);
-  console.log(`   - BOT_TOKEN (from @BotFather)`);
-  console.log(`   - GOOGLE_CLIENT_ID (from Google Cloud Console)`);
-  console.log(`   - GOOGLE_CLIENT_SECRET (from Google Cloud Console)`);
-  console.log(`2. Check logs for errors`);
+  console.log(`\n=== СЕРВЕР ЗАПУЩЕН ===`);
+  console.log(`1. API доступен по адресу: https://backend-flower2-production.up.railway.app/`);
+  console.log(`2. Health check: https://backend-flower2-production.up.railway.app/health`);
+  console.log(`\n=== НАСТРОЙКА ===`);
+  console.log(`Чтобы бот заработал, замените "ВАШ_ТОКЕН_БОТА" на реальный токен:`);
+  console.log(`1. Откройте Telegram, найдите @BotFather`);
+  console.log(`2. Создайте бота: /newbot`);
+  console.log(`3. Скопируйте токен и вставьте в переменную BOT_TOKEN в Railway`);
+  console.log(`4. ИЛИ прямо в коде замените "ВАШ_ТОКЕН_БОТА" на ваш токен`);
+});
+
+// Обработка завершения
+process.on('SIGINT', () => {
+  console.log('\n🛑 Shutting down...');
+  if (bot) bot.stopPolling();
+  process.exit(0);
 });
