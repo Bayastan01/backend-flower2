@@ -745,3 +745,7 @@ process.on('SIGINT', () => {
   if (bot) bot.stopPolling();
   process.exit(0);
 });
+
+
+
+// исправь вес
