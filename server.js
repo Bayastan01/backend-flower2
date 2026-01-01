@@ -214,6 +214,26 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Корневой маршрут
+app.get('/', (req, res) => {
+  res.json({
+    message: 'Flower Market Backend API',
+    version: '1.0.0',
+    endpoints: {
+      health: '/health',
+      telegramData: '/api/telegram-data/:tempId',
+      userCheck: '/api/user/check/:telegramId',
+      googleAuthUrl: '/api/auth/google/url (POST)',
+      googleCallback: '/api/auth/google/callback',
+      sessionCheck: '/api/session/:sessionToken',
+      draftSave: '/api/draft/save (POST)',
+      draftGet: '/api/draft/:sessionToken',
+      publishAd: '/api/publish-ad (POST)',
+      logout: '/api/logout (POST)'
+    }
+  });
+});
+
 // Получение информации о Telegram пользователе
 app.get('/api/telegram-data/:tempId', (req, res) => {
   try {
@@ -790,9 +810,11 @@ setInterval(() => {
 
 // 404 handler
 app.use((req, res) => {
+  console.log(`404 Not Found: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
     error: 'Route not found',
-    requestedUrl: req.originalUrl
+    requestedUrl: req.originalUrl,
+    method: req.method
   });
 });
 
@@ -813,7 +835,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
   console.log(`\n=== IMPORTANT ===`);
   console.log(`1. Google OAuth Callback URL: ${process.env.BACKEND_URL || 'https://backend-flower2-production.up.railway.app'}/api/auth/google/callback`);
-  console.log(`2. Make sure all environment variables are set`);
+  console.log(`2. Make sure all environment variables are set correctly`);
 });
 
 process.on('SIGINT', () => {
