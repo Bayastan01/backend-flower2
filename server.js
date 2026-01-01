@@ -8,9 +8,16 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: ['https://flowers-telegram-kyrgyzstan.up.railway.app'],
-  credentials: true
+  origin: [
+    'https://flowers-telegram-kyrgyzstan.up.railway.app',
+    'https://backend-flower2-production.up.railway.app',
+    'http://localhost:3000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.options('*', cors()); // Обработка preflight запросов
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -28,6 +35,8 @@ let googleClient;
 if (process.env.GOOGLE_CLIENT_ID) {
   googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
   console.log('✅ Google OAuth initialized');
+} else {
+  console.warn('⚠️ GOOGLE_CLIENT_ID not found, Google auth disabled');
 }
 
 const channelId = process.env.CHANNEL_ID;
@@ -171,6 +180,40 @@ function initializeTelegramBot() {
       );
     });
 
+    // Обработчик callback_query (кнопки)
+    bot.on('callback_query', (callbackQuery) => {
+      const msg = callbackQuery.message;
+      const data = callbackQuery.data;
+      
+      if (data === 'check_approval') {
+        const userId = callbackQuery.from.id.toString();
+        const user = users.get(userId);
+        
+        if (user && user.isApproved) {
+          bot.sendMessage(msg.chat.id, 
+            `✅ Ваш аккаунт одобрен!\n\n` +
+            `Теперь вы можете создавать объявления через веб-приложение.`,
+            {
+              reply_markup: {
+                inline_keyboard: [[
+                  {
+                    text: '🌺 Создать объявление',
+                    web_app: { url: process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app' }
+                  }
+                ]]
+              }
+            }
+          );
+        } else {
+          bot.sendMessage(msg.chat.id, 
+            `⏳ Ваш аккаунт еще не одобрен.\n\n` +
+            `Администратор получил уведомление и скоро одобрит ваш доступ.\n` +
+            `Проверьте позже.`
+          );
+        }
+      }
+    });
+
     // Обработчик ошибок polling
     bot.on('polling_error', (error) => {
       console.error('❌ Polling error:', error.code, error.message);
@@ -304,6 +347,8 @@ app.post('/api/send-message/:chatId', async (req, res) => {
 app.get('/api/user/:userId/status', async (req, res) => {
   try {
     const userId = req.params.userId;
+    console.log(`🔍 Checking user status for: ${userId}`);
+    
     const user = users.get(userId);
     
     if (user && user.isLoggedIn) {
@@ -335,7 +380,11 @@ app.get('/api/user/:userId/status', async (req, res) => {
       });
     }
     
-    res.json({ isLoggedIn: false });
+    // Если пользователя нет вообще
+    res.json({ 
+      isLoggedIn: false,
+      message: 'User not found'
+    });
   } catch (error) {
     console.error('Error checking user status:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -347,8 +396,17 @@ app.post('/api/auth/google', async (req, res) => {
   try {
     const { token, telegramUserId } = req.body;
     
+    console.log('🔐 Google auth request:', { 
+      telegramUserId, 
+      hasToken: !!token,
+      tokenLength: token ? token.length : 0
+    });
+    
     if (!token) {
-      return res.status(400).json({ error: 'No token provided' });
+      return res.status(400).json({ 
+        success: false, 
+        error: 'No token provided' 
+      });
     }
 
     if (!googleClient) {
@@ -362,9 +420,13 @@ app.post('/api/auth/google', async (req, res) => {
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID
+    }).catch(error => {
+      console.error('❌ Google token verification failed:', error.message);
+      throw new Error(`Invalid Google token: ${error.message}`);
     });
 
     const payload = ticket.getPayload();
+    console.log('✅ Google user verified:', payload.email);
     
     // Создаем пользователя
     const user = {
@@ -394,7 +456,7 @@ app.post('/api/auth/google', async (req, res) => {
     // Сохраняем пользователя
     users.set(user.id, user);
     
-    console.log(`✅ New user registered: ${user.name} (ID: ${user.id})`);
+    console.log(`✅ New user registered: ${user.name} (ID: ${user.id}, Telegram: ${user.telegramId})`);
 
     // Отправляем приветственное сообщение в Telegram
     if (botInitialized && user.telegramId) {
@@ -417,6 +479,10 @@ app.post('/api/auth/google', async (req, res) => {
               {
                 text: '🌺 Создать объявление',
                 web_app: { url: process.env.FRONTEND_URL || 'https://flowers-telegram-kyrgyzstan.up.railway.app' }
+              },
+              {
+                text: '🔄 Проверить статус',
+                callback_data: 'check_approval'
               }
             ]]
           }
@@ -455,12 +521,13 @@ app.post('/api/auth/google', async (req, res) => {
         email: user.email,
         picture: user.picture,
         isApproved: user.isApproved,
-        telegramId: user.telegramId
+        telegramId: user.telegramId,
+        isLoggedIn: true
       }
     });
 
   } catch (error) {
-    console.error('Google auth error:', error);
+    console.error('❌ Google auth error:', error);
     res.status(401).json({ 
       success: false, 
       error: 'Authentication failed',
@@ -482,6 +549,15 @@ app.post('/api/publish-ad', async (req, res) => {
       return res.status(401).json({ 
         success: false, 
         error: 'User not authenticated' 
+      });
+    }
+
+    // Проверяем одобрение пользователя
+    if (!user.isApproved) {
+      return res.status(403).json({
+        success: false,
+        error: 'User not approved yet',
+        message: 'Please wait for administrator approval'
       });
     }
 
@@ -548,7 +624,8 @@ app.post('/api/publish-ad', async (req, res) => {
             `*Заголовок:* ${title}\n` +
             `*Цена:* ${price}\n\n` +
             `📢 *Ссылка на объявление:*\n` +
-            `https://t.me/c/${channelId.toString().slice(4)}/${telegramMessageId}`;
+            `https://t.me/c/${channelId.toString().slice(4)}/${telegramMessageId}\n\n` +
+            `*Спасибо за использование Flower Market!* 🌸`;
         } else {
           userMessage = `⚠️ *Объявление не опубликовано*\n\n` +
             `*Заголовок:* ${title}\n` +
@@ -577,7 +654,7 @@ app.post('/api/publish-ad', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Error publishing ad:', error);
+    console.error('❌ Error publishing ad:', error);
     res.status(500).json({ 
       success: false, 
       error: 'Failed to publish ad',
@@ -616,8 +693,67 @@ app.get('/api/user/:userId/approval-status', (req, res) => {
   const userId = req.params.userId;
   const user = users.get(userId);
   
+  if (!user) {
+    return res.status(404).json({ 
+      isApproved: false,
+      error: 'User not found' 
+    });
+  }
+  
   res.json({
-    isApproved: user ? (user.isApproved || false) : false
+    isApproved: user.isApproved || false,
+    userId: user.id,
+    userName: user.name
+  });
+});
+
+// Обновление статуса одобрения (для админа)
+app.post('/api/user/:userId/approve', (req, res) => {
+  const userId = req.params.userId;
+  const { approved } = req.body;
+  const user = users.get(userId);
+  
+  if (!user) {
+    return res.status(404).json({ success: false, error: 'User not found' });
+  }
+  
+  user.isApproved = approved === true;
+  users.set(userId, user);
+  
+  // Отправляем уведомление пользователю
+  if (botInitialized && user.telegramId) {
+    const message = approved ? 
+      `✅ *Ваш аккаунт одобрен!*\n\nТеперь вы можете создавать объявления о продаже цветов.` :
+      `❌ *Доступ ограничен*\n\nВаш аккаунт был заблокирован администратором.`;
+    
+    sendTelegramMessage(user.telegramId, message, { parse_mode: 'Markdown' });
+  }
+  
+  res.json({
+    success: true,
+    userId: user.id,
+    isApproved: user.isApproved,
+    message: `User ${approved ? 'approved' : 'disapproved'} successfully`
+  });
+});
+
+// Получение списка всех пользователей (для админа)
+app.get('/api/users', (req, res) => {
+  const userList = Array.from(users.values()).map(user => ({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    telegramId: user.telegramId,
+    isApproved: user.isApproved || false,
+    isLoggedIn: user.isLoggedIn || false,
+    adsCount: (user.ads || []).length,
+    registeredAt: user.createdAt
+  }));
+  
+  res.json({
+    success: true,
+    users: userList,
+    count: userList.length
   });
 });
 
@@ -652,6 +788,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`4. Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`\n=== BOT STATUS ===`);
   console.log(`Bot initialized: ${botInitialized ? '✅ Yes' : '❌ No'}`);
+  console.log(`Users in memory: ${users.size}`);
 });
 
 // Graceful shutdown
