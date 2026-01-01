@@ -22,7 +22,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 // Проверка переменных окружения
 console.log('=== ENVIRONMENT CHECK ===');
 console.log('- BOT_TOKEN:', process.env.BOT_TOKEN ? '✓ Set' : '✗ Missing');
-console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set` : '✗ Missing');
+console.log('- GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? `✓ Set (${process.env.GOOGLE_CLIENT_ID})` : '✗ Missing');
 console.log('- CHANNEL_ID:', process.env.CHANNEL_ID ? '✓ Set' : '✗ Missing');
 console.log('- ADMIN_CHAT_ID:', process.env.ADMIN_CHAT_ID ? '✓ Set' : '✗ Missing');
 console.log('- NODE_ENV:', process.env.NODE_ENV || 'development');
@@ -241,7 +241,8 @@ function initializeTelegramBot() {
             message += `   📅 ${date}\n`;
             
             if (ad.telegramMessageId) {
-              message += `   🔗 [Посмотреть](${getChannelMessageLink(ad.telegramMessageId)})\n`;
+              const chatId = channelId ? channelId.toString().replace('-100', '') : '';
+              message += `   🔗 [Посмотреть](https://t.me/c/${chatId}/${ad.telegramMessageId})\n`;
             }
             message += `\n`;
           });
@@ -283,13 +284,6 @@ function initializeTelegramBot() {
 }
 
 initializeTelegramBot();
-
-// Функция для получения ссылки на сообщение в канале
-function getChannelMessageLink(messageId) {
-  if (!channelId) return '#';
-  const chatId = channelId.toString().replace('-100', '');
-  return `https://t.me/c/${chatId}/${messageId}`;
-}
 
 // ==================== ROUTES ====================
 
@@ -719,7 +713,8 @@ app.post('/api/publish-ad', async (req, res) => {
         let userMessage;
         
         if (telegramMessageId) {
-          const messageLink = getChannelMessageLink(telegramMessageId);
+          const chatId = channelId ? channelId.toString().replace('-100', '') : '';
+          const messageLink = `https://t.me/c/${chatId}/${telegramMessageId}`;
           userMessage = `✅ *Ваше объявление опубликовано!*\n\n` +
             `*Заголовок:* ${title}\n` +
             `*Цена:* ${price}\n\n` +
@@ -842,12 +837,12 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 CORS enabled for: https://flowers-telegram-kyrgyzstan.up.railway.app`);
   console.log(`🤖 Bot: ${botInitialized ? '✅ Active' : '❌ Inactive'}`);
   console.log(`🔑 Google OAuth: ${googleClient ? '✅ Initialized' : '❌ Not configured'}`);
-  console.log(`\n=== INSTRUCTIONS ===`);
-  console.log(`1. User sends /start to @Flowers_free_bot`);
-  console.log(`2. Bot sends WebApp link with Telegram ID`);
-  console.log(`3. User clicks "Войти через Google" button`);
-  console.log(`4. User authorizes and gets session`);
-  console.log(`5. User creates ads without re-auth`);
+  console.log(`\n=== ИНСТРУКЦИЯ ===`);
+  console.log(`1. Пользователь пишет /start боту`);
+  console.log(`2. Бот отправляет кнопку с WebApp ссылкой`);
+  console.log(`3. WebApp открывается с кнопкой "Войти через Google"`);
+  console.log(`4. Пользователь нажимает кнопку и авторизуется`);
+  console.log(`5. После авторизации открывается форма объявления`);
 });
 
 process.on('SIGINT', () => {
